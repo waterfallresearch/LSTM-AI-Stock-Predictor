@@ -149,6 +149,11 @@ class Result:
     spread_fallbacks: int = 0      # fills that used spread_fallback because the estimate was missing
     cap_blocked: int = 0           # entries skipped because ADV20 was unknown
     cap_shrunk: int = 0            # entries reduced by the participation cap
+    cash_path: np.ndarray | None = None
+    holdings_path: np.ndarray | None = None
+    cancelled_entries: int = 0
+    deferred_exits: int = 0
+    cash_events: list[dict] = field(default_factory=list)
 
 
 def is_non_common(symbol: str) -> bool:
@@ -398,13 +403,22 @@ def sell_fees(date: pd.Timestamp, notional: float, shares: float, rows: list) ->
 # ----------------------------------------------------------------------------- simulator
 
 def run_strategy(panel: Panel, p: StrategyParams, rng: np.random.Generator | None = None,
-                 shuffle_signals: bool = False, *, confirm: bool = False) -> Result:
+                 shuffle_signals: bool = False, *, confirm: bool = False,
+                 targets: dict[int, dict[int, float]] | None = None) -> Result:
     """Simulate the strategy. With shuffle_signals=True (negative control) each day's
     (prob, std) pairs are randomly reassigned among that day's tickers that have a forecast."""
     guard_confirmation(panel.dates, confirm, "run_strategy")
     T, N = panel.close.shape
     fill = p.fill_mode
     open_mode = fill == "next_open"
+    if targets is not None:
+        if not open_mode or shuffle_signals:
+            raise ValueError("Target rebalancing requires deterministic next-open fills")
+        for i, weights in targets.items():
+            if not 0 <= i < T - 1 or any(not 0 <= j < N or not 0 < w <= 1 for j, w in weights.items()):
+                raise ValueError("Invalid rebalance schedule")
+            if sum(weights.values()) > 1 + 1e-10:
+                raise ValueError("Target weights exceed unlevered exposure")
     if open_mode and panel.open is None:
         raise ValueError("fill='next_open' needs a panel with Open prices")
     if p.use_member_mask and panel.member is None:
@@ -425,6 +439,11 @@ def run_strategy(panel: Panel, p: StrategyParams, rng: np.random.Generator | Non
     positions: list[dict] = []
     pending: list[dict] = []
     equity = np.zeros(T)
+    cash_path = np.zeros(T) if targets is not None else None
+    holdings_path = np.zeros(T) if targets is not None else None
+    deferred: dict[int, float] = {}
+    cash_events: list[dict] = []
+    cancelled_entries = deferred_exits = 0
     trades: list[dict] = []
     buy_points: list[dict] = []
     total_costs = 0.0
@@ -433,6 +452,17 @@ def run_strategy(panel: Panel, p: StrategyParams, rng: np.random.Generator | Non
     last_px = np.full(N, np.nan)
     br = {"flat": 0.0, "spread": 0.0, "impact": 0.0, "fees": 0.0}
     stats = {"spread_fallbacks": 0, "cap_blocked": 0, "cap_shrunk": 0, "dividends": 0.0}
+
+    def prior_adv(i: int, j: int) -> float:
+        if i == 0:
+            return np.nan
+        scale = panel.split_factor[i, j] if targets is not None and panel.split_factor is not None else 1.0
+        return panel.adv20[i - 1, j] * scale
+
+    def cash_event(i: int, j: int, kind: str, amount: float, shares: float, price: float, cost=0.0) -> None:
+        if targets is not None:
+            cash_events.append({"date": panel.dates[i], "ticker": panel.tickers[j], "kind": kind,
+                                "cash_change": amount, "shares": shares, "price": price, "cost": cost})
 
     def trade_cost(i: int, j: int, notional: float, shares: float, side: str) -> float:
         c = notional * cost_rate
@@ -446,7 +476,7 @@ def run_strategy(panel: Panel, p: StrategyParams, rng: np.random.Generator | Non
             br["spread"] += x
             c += x
         if use_impact and i > 0:
-            a, sig = panel.adv20[i - 1, j], panel.sigma20[i - 1, j]
+            a, sig = prior_adv(i, j), panel.sigma20[i - 1, j]
             if np.isfinite(a) and a > 0 and np.isfinite(sig):
                 x = p.impact_k * sig * np.sqrt(shares / a) * notional
                 br["impact"] += x
@@ -513,6 +543,106 @@ def run_strategy(panel: Panel, p: StrategyParams, rng: np.random.Generator | Non
                            "Horizon": o["h"], "Pred_Prob": o["prob"], "Adj_Prob": o["adj"]})
         return True
 
+    def rebalance(i: int, prev_px: np.ndarray) -> None:
+        nonlocal cash, traded, total_costs, cancelled_entries, deferred_exits
+        weights = targets.get(i - 1)
+        marks = panel.open[i]
+        held = {pos["j"]: pos for pos in positions}
+        if weights is not None:
+            value = equity_at_open(i, prev_px)
+            deferred.clear()
+            for j, pos in held.items():
+                mark = marks[j] if np.isfinite(marks[j]) and marks[j] > 0 else prev_px[j]
+                if j in active_settle:
+                    continue
+                if j not in weights:
+                    deferred[j] = pos["shares"]
+                elif np.isfinite(mark) and mark > 0:
+                    trim = pos["shares"] - value * weights[j] / mark
+                    if trim > 1e-10:
+                        deferred[j] = trim
+        for j in sorted(deferred, key=lambda j: panel.tickers[j]):
+            pos = held.get(j)
+            if pos is None or j in active_settle:
+                del deferred[j]
+                continue
+            px = marks[j]
+            if not np.isfinite(px) or px <= 0:
+                deferred_exits += 1
+                continue
+            quantity = min(deferred[j], pos["shares"])
+            if use_cap:
+                a = prior_adv(i, j)
+                if not np.isfinite(a) or a <= 0:
+                    stats["cap_blocked"] += 1
+                    deferred_exits += 1
+                    continue
+                cap = p.participation_cap * a
+                if cap < quantity:
+                    quantity = cap
+                    stats["cap_shrunk"] += 1
+            fraction = quantity / pos["shares"]
+            basis = pos["cost_basis"] * fraction
+            divs = pos["divs"] * fraction
+            gross = quantity * px
+            cost = trade_cost(i, j, gross, quantity, "sell")
+            record_exit({**pos, "cost_basis": basis, "divs": divs}, i, px, gross, cost, "rebalance")
+            cash += gross - cost
+            cash_event(i, j, "sell", gross - cost, quantity, px, cost)
+            traded += gross
+            total_costs += cost
+            pos["shares"] -= quantity
+            pos["cost_basis"] -= basis
+            pos["divs"] -= divs
+            deferred[j] -= quantity
+            if pos["shares"] <= 1e-10:
+                positions.remove(pos)
+                del held[j]
+            if deferred[j] <= 1e-10 or j not in held:
+                del deferred[j]
+            else:
+                deferred_exits += 1
+        if weights is None:
+            return
+        for j, weight in weights.items():
+            px = marks[j]
+            if j in active_settle or not np.isfinite(px) or px <= 0:
+                cancelled_entries += 1
+                continue
+            pos = held.get(j)
+            shares = pos["shares"] if pos else 0.0
+            alloc = min(cash, value * weight - shares * px)
+            if alloc < 1.0:
+                continue
+            if use_cap:
+                a = prior_adv(i, j)
+                if not np.isfinite(a) or a <= 0:
+                    stats["cap_blocked"] += 1
+                    continue
+                cap = p.participation_cap * a * px
+                if cap < alloc:
+                    alloc = cap
+                    stats["cap_shrunk"] += 1
+            if alloc < 1.0:
+                continue
+            cost = trade_cost(i, j, alloc, alloc / px, "buy")
+            acquired = (alloc - cost) / px
+            if acquired <= 0:
+                raise ValueError("Buy costs exceed allocation")
+            cash -= alloc
+            cash_event(i, j, "buy", -alloc, acquired, px, cost)
+            total_costs += cost
+            traded += alloc
+            if pos:
+                pos["entry_px"] = (pos["entry_px"] * shares + px * acquired) / (shares + acquired)
+                pos["shares"] += acquired
+                pos["cost_basis"] += alloc
+            else:
+                positions.append({"j": j, "entry_idx": i, "signal_idx": i - 1, "entry_px": px,
+                                  "last_px": px, "shares": acquired, "cost_basis": alloc, "divs": 0.0,
+                                  "exit_idx": T, "h": "rebalance", "prob": np.nan,
+                                  "std": np.nan, "adj": np.nan})
+
     for i in range(T):
         row = panel.close[i]
         fin = np.isfinite(row)
@@ -523,6 +653,8 @@ def run_strategy(panel: Panel, p: StrategyParams, rng: np.random.Generator | Non
             sj = np.flatnonzero(f != 1.0)
             if sj.size:
                 last_px[sj] = last_px[sj] / f[sj]          # stale marks restated in post-split units
+                for j in deferred:
+                    deferred[j] *= f[j]
                 for pos in positions:
                     fj = f[pos["j"]]
                     if fj != 1.0:
@@ -536,6 +668,7 @@ def run_strategy(panel: Panel, p: StrategyParams, rng: np.random.Generator | Non
                 if d != 0.0:
                     amt = pos["shares"] * d
                     cash += amt
+                    cash_event(i, pos["j"], "dividend", amt, pos["shares"], d)
                     pos["divs"] += amt
                     stats["dividends"] += amt
         for s in settle_at.get(i, []):
@@ -560,8 +693,8 @@ def run_strategy(panel: Panel, p: StrategyParams, rng: np.random.Generator | Non
                 if s.successor_j is not None:
                     po = panel.open[i, s.successor_j]
                     if not (np.isfinite(po) and po > 0):
-                        lp = last_px[s.successor_j]
-                        if i < T - 1:      # wait for the successor's first open; mark at its last close
+                        lp = prev_px[s.successor_j] if targets is not None else last_px[s.successor_j]
+                        if i < T - 1 or targets is not None:
                             if np.isfinite(lp):
                                 pos["last_px"] = s.cash_per_share + s.successor_shares * lp
                             pos["settling"] = True
@@ -575,12 +708,30 @@ def run_strategy(panel: Panel, p: StrategyParams, rng: np.random.Generator | Non
                 cost = trade_cost(i, s.successor_j, stock_val, stock_sh, "sell") if stock_sh > 0 else 0.0
                 gross = pos["shares"] * s.cash_per_share + stock_val
                 cash += gross - cost
+                cash_event(i, pos["j"], "settlement", gross - cost, pos["shares"],
+                           gross / pos["shares"], cost)
                 total_costs += cost
                 traded += stock_val
                 value_ps = s.cash_per_share + s.successor_shares * po
                 pos["last_px"] = value_ps
                 record_exit(pos, i, value_ps, gross, cost, "settlement")
             positions = keep
+
+        if targets is not None:
+            rebalance(i, prev_px)
+            for pos in positions:
+                if pos.get("settling"):
+                    s = active_settle[pos["j"]]
+                    lp = last_px[s.successor_j]
+                    if np.isfinite(lp):
+                        pos["last_px"] = s.cash_per_share + s.successor_shares * lp
+                elif np.isfinite(last_px[pos["j"]]):
+                    pos["last_px"] = last_px[pos["j"]]
+            cash_path[i] = cash
+            holdings_path[i] = sum(q["shares"] * q["last_px"] for q in positions)
+            equity[i] = cash_path[i] + holdings_path[i]
+            days_invested += bool(positions)
+            continue
 
         # 2) Time exits (at the open in next_open mode, else at the close / last mark)
         keep = []
@@ -682,7 +833,9 @@ def run_strategy(panel: Panel, p: StrategyParams, rng: np.random.Generator | Non
 
     return Result(equity, pd.DataFrame(trades), buy_points, total_costs, len(positions), days_invested, traded,
                   cost_breakdown=br, dividends=stats["dividends"], spread_fallbacks=stats["spread_fallbacks"],
-                  cap_blocked=stats["cap_blocked"], cap_shrunk=stats["cap_shrunk"])
+                  cap_blocked=stats["cap_blocked"], cap_shrunk=stats["cap_shrunk"],
+                  cash_path=cash_path, holdings_path=holdings_path, cancelled_entries=cancelled_entries,
+                  deferred_exits=deferred_exits, cash_events=cash_events)
 
 
 # ----------------------------------------------------------------------------- metrics
