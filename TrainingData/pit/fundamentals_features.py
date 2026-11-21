@@ -65,7 +65,9 @@ def _latest_known(group: pd.DataFrame, prior: pd.Timestamp) -> pd.DataFrame:
     eligible = usable.merge(baseline, on=by_period + ["period"])
     eligible = eligible.loc[
         (eligible.form.isin(["10-Q", "10-K"]) & eligible.accepted_at.eq(eligible.original_at))
-        | (eligible.form.isin(["10-Q/A", "10-K/A"]) & eligible.accepted_at.gt(eligible.original_at))
+        | (eligible.form.isin(["10-Q/A", "10-K/A"])
+           & eligible.accepted_at.gt(eligible.original_at)
+           & eligible[["assets", "net_income", "book_equity"]].notna().any(axis=1))
     ]
     # Preserve ambiguous quarters as missing placeholders so stale periods cannot replace them.
     rejected = usable.loc[~pd.MultiIndex.from_frame(usable[by_period]).isin(

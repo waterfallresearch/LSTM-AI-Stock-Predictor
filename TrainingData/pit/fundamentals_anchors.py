@@ -61,6 +61,7 @@ def download_facts() -> None:
         manifest = dict(zip(ids, pool.map(fetch, ids), strict=True))
     (OUT / "edgar_fact_manifest.json").write_text(json.dumps(manifest, sort_keys=True))
     print(f"Cached {sum('sha256' in record for record in manifest.values())}/{len(ids)} CIKs")
+    print(json.dumps({cik: record for cik, record in manifest.items() if "sha256" not in record}))
 
 
 def reconcile_assets(filings: pd.DataFrame, facts: pd.DataFrame, snapshots: pd.DataFrame) -> pd.DataFrame:

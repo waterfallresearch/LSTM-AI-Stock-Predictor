@@ -139,6 +139,26 @@ def test_amendment_timing_and_frozen_denominator():
     assert coverage(panel)["complete"] == 2
     facts.loc[2, "usable"] = pd.Timestamp("2024-11-27")
     assert build_features(roster, facts).accession.iloc[1] == "amendment"
+    for column, value, error in [
+        ("prior_session", pd.Timestamp("2024-11-29"), "immediately precede"),
+        ("cap_session", pd.Timestamp("2024-11-26"), "Market cap"),
+    ]:
+        invalid = roster.copy()
+        invalid.loc[1, column] = value
+        with pytest.raises(ValueError, match=error):
+            build_features(invalid, facts)
+    for column, value, error in [
+        ("usable", pd.Timestamp("2024-11-18"), "precedes filing"),
+        ("net_income_start", pd.Timestamp("2024-01-01"), "cover one quarter"),
+    ]:
+        invalid = facts.copy()
+        invalid.loc[2, column] = value
+        with pytest.raises(ValueError, match=error):
+            build_features(roster, invalid)
+    stale = roster.iloc[[1]].assign(signal=pd.Timestamp("2024-12-31"),
+                                    prior_session=pd.Timestamp("2024-12-30"),
+                                    cap_session=pd.Timestamp("2024-12-30"))
+    assert build_features(stale, facts).status.tolist() == ["stale_filing"]
     roster.loc[2, "signal"] = pd.Timestamp("2025-01-31")
     with pytest.raises(ValueError, match="Confirmation"):
         build_features(roster, facts)
