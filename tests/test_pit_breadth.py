@@ -4,6 +4,7 @@ import pytest
 
 import backtest_core as bc
 from pit_breadth import paired_compare, targets_for, run_portfolio
+from pit_price_ranks import schedules, signals
 
 
 def make_panel(opens, *, dates=None, splits=None):
@@ -86,3 +87,28 @@ def test_confirmation_guard_checks_target_rebalance():
     panel.dates = pd.bdate_range("2025-01-02", periods=2).tolist()
     with pytest.raises(bc.ConfirmationPeriodError):
         bc.run_strategy(panel, params(), targets={0: {0: 1.0}})
+
+
+def test_price_feature_snapshots_do_not_read_signal_day_or_forward():
+    dates = pd.bdate_range("2018-01-02", periods=260)
+    values = pd.DataFrame({"A": np.arange(10., 270.)}, index=dates)
+    control, features = signals(values, values, values)
+    changed = values.copy()
+    changed.iloc[-1] *= 100
+    new_control, new_features = signals(changed, changed, changed)
+    pd.testing.assert_frame_equal(control, new_control)
+    for a, b in zip(features, new_features):
+        pd.testing.assert_frame_equal(a, b)
+
+
+def test_price_composite_has_common_mask_and_stable_tie_breaks():
+    dates = pd.to_datetime(["2024-01-30", "2024-01-31", "2024-02-01"])
+    panel = make_panel({stock: [10.0] * 3 for stock in "ABCDEF"}, dates=dates)
+    base = pd.DataFrame(1.0, index=dates, columns=panel.tickers)
+    factor = base.copy()
+    factor.loc[dates[1], "A"] = np.nan
+    factor.loc[dates[1], "F"] = 9.0
+    targets, _, counts = schedules(panel, base, (factor, base, base, base), params())
+    assert counts == [5]
+    assert list(targets["momentum"][1]) == [1, 2, 3, 4, 5]
+    assert list(targets["composite"][1]) == [5, 1, 2, 3, 4]
