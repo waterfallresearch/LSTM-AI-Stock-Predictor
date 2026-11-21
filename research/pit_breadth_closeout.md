@@ -23,3 +23,22 @@ Local ignored output directory: wf_pit/breadth. SHA-256 identifiers:
 - broad_trades.csv 176a21a5fecb08a0275bf6d774049e789542c88d08ec3e67f72706e02a131eeb
 
 A future research arm may test a different signal under its own frozen protocol. The breadth result does not authorize confirmation, long-short execution, or deployment.
+
+## Separate price-rank experiment
+
+One locked run at clean commit d32028d. The 107 monthly rebalances had exactly the same eligible keys in each arm, with 494–505 names to rank. Both arms followed the five-name portfolio rules. The momentum control was rescored under common eligibility and counted as a new trial. N is now 49.
+
+| Strategy | Net CAGR | Net Sharpe | Max drawdown | Trades | Monthly rank IC | Stress Sharpe | Top-three removal Sharpe |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| Six-month momentum | 11.38% | 0.499 | -41.05% | 422 | -0.00171 | 0.457 | 0.410 |
+| Four-factor price composite | 13.39% | 0.785 | -33.47% | 475 | 0.00309 | 0.726 | 0.693 |
+
+**Decision: the composite does not advance.** Its +0.287 paired Sharpe point estimate met the 0.20 target, but the one-sided lower bound was -0.206 and the two-sided interval was [-0.299, 0.951]. Deflated Sharpe was 0.346. The stress and top-three tests favored the composite. The near-zero rank IC and wide interval limit the evidence for incremental signal. SPY returned 14.61% annualized with Sharpe 0.854. Cash, equity, transaction costs, fill ordering, and reported risk were independently reconciled.
+
+Local ignored output directory: wf_pit/price_ranks. Results SHA-256 a490a9b07c4e64bfeabfbe71794ef02fb4fc3e8d343bc2b8b38349b729e07bd1. Manifest SHA-256 0a193be860cdfbf8e72d4f9c4feef9eecdeff6de2b553b6e533cb3a81c2e6e30.
+
+## Remaining research gates
+
+The read-only WRDS/LSEG follow-up increased the number of verified accounting fields and audited preliminary snapshot population. It did not establish a training-ready statements panel or original historical earnings actual availability. See fundamentals_feature_readiness_2026-11-21.md for the metric-level findings. Long-short borrow availability and financing remain unverified. No earnings, fundamentals or model-complexity backtest ran. The optional paper strategy was deferred and the reserved period stayed sealed.
+
+Claude independently reviewed the price-rank gate interpretation and confirmed that the composite does not advance. The two price-rank arms are trials 48 and 49. The previously locked breadth decision stands.

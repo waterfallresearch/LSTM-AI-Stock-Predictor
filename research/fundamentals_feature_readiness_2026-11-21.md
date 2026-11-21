@@ -15,3 +15,9 @@ Assets and net income can seed a later profitability and asset-growth pilot. Res
 The prior LSEG earnings pilot supports same-period matching on selected events. Historical actual activation remains unverified, and the visible WRDS EPS samples lack usable development-window coverage. An earnings or fundamentals feature experiment remains conditional on coverage and vintage acceptance.
 
 SEC accession numbers audited: Apple 0000320193-24-000006, Repligen 0000950170-24-087981 and 0000950170-24-127845, Twitter 0001418091-22-000147. The underlying SEC Company Facts API and the two vendor APIs were queried read-only. This evidence supplements the dual-source revenue pilot and does not enter the frozen breadth experiment.
+
+## Preliminary universe coverage
+
+A read-only WRDS aggregation restricted industrial-format, standardized, consolidated USD quarters to 2016–2024, selected each company/period's earliest snapshot before 2025, and linked fiscal period ends through dated primary LC/LU CCM rows to historical CRSP S&P 500 membership. Among 17,487 returned company-quarters, the first snapshot contained assets in 90.6%, net income in 99.5%, book equity in 88.8%, YTD operating cash flow in 72.2% and YTD capex in 69.8%. These percentages are conditional on a returned and linked snapshot. They do not measure daily feature availability or the share of all eligible S&P 500 members with usable observations. Period-end membership was used for this diagnostic only. Missing fields remain missing. The production gate still needs a dated security-level join, signal-session coverage, consecutive comparable period pairs and resolution of accounting discrepancies.
+
+Claude reviewed the metric pilot and agreed to keep scoring gated. The Repligen amendment first matched WRDS on November 28, 2024. The SEC filing and WRDS snapshot date provide distinct provenance.
