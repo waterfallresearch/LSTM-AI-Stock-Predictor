@@ -20,6 +20,7 @@ TrainingData/indicators_data/
 # Walk-forward run artifacts (results are committed via research/ once evaluated)
 wf/
 wf_smoke/
+wf_pit/
 wf_run.log
 research/*_smoke.*
 .pytest_cache/
