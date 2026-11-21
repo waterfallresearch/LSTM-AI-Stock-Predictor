@@ -168,7 +168,7 @@ def load_frozen() -> tuple[dict[str, pd.DataFrame], dict]:
 
 # ----------------------------------------------------------------------------- job
 
-def run_job(year: int, k: int, threads: int) -> None:
+def run_job(year: int, k: int, threads: int, *, comparison: bool = False) -> None:
     os.environ.setdefault("TF_CPP_MIN_LOG_LEVEL", "2")
     import tensorflow as tf
     from sklearn.metrics import roc_auc_score
@@ -188,48 +188,68 @@ def run_job(year: int, k: int, threads: int) -> None:
     fd = wf.fold_dates(year, cal)
     te = np.datetime64(fd["train_end"])
 
-    thresholds, train_rows = {}, []
-    for t, df in data.items():
-        tr = df[df["Date"] < fd["train_end"]]
-        if len(tr) >= 100:
-            thresholds[t] = {h: float(tr[f"Target_{h}"].mean() + tr[f"Target_{h}"].std()) for h in HORIZONS}
-            train_rows.append(tr.loc[tr["member"], FEATURES].to_numpy(np.float64))
-    Xs = np.vstack(train_rows)
-    keep = Xs.std(axis=0) > 1e-12
-    feat_idx = np.flatnonzero(keep)
-    scaler = StandardScaler().fit(Xs[:, keep])
-    del Xs, train_rows
+    output = OUT / "model_comparison" / "lstm" if comparison else OUT
+    if comparison:
+        import pit_panel
+        from pit_model_label_dates import experiment_provenance, model_fold
 
-    def prep(df):
-        f = df[FEATURES].to_numpy(np.float64)[:, feat_idx]
-        return np.nan_to_num(scaler.transform(f), nan=0.0, posinf=10, neginf=-10).astype(np.float32)
+        pit = pit_panel.load_pit(end=END, strict=True)
+        fd = wf.fold_dates(year, pit.spy.index)
+        shared = model_fold(data, pit, fd)
+        Xtr, ytr = shared.train_x, shared.train_y
+        Xv, yv = shared.validation_x, shared.validation_y
+        cache, feat_idx = shared.cache, shared.feature_indices
+        for directory in ("forecasts", "meta"):
+            (output / directory).mkdir(parents=True, exist_ok=True)
+        sample_metadata = {"sample_digests": shared.digests, "corrected_labels": True,
+                           "provenance": experiment_provenance(spec, Path(__file__)),
+                           "feature_indices": feat_idx.tolist(),
+                           "shared_code_sha256": file_sha(Path(__file__).with_name("pit_model_label_dates.py"))}
+    else:
+        thresholds, train_rows = {}, []
+        for t, df in data.items():
+            tr = df[df["Date"] < fd["train_end"]]
+            if len(tr) >= 100:
+                thresholds[t] = {h: float(tr[f"Target_{h}"].mean() + tr[f"Target_{h}"].std()) for h in HORIZONS}
+                train_rows.append(tr.loc[tr["member"], FEATURES].to_numpy(np.float64))
+        Xs = np.vstack(train_rows)
+        keep = Xs.std(axis=0) > 1e-12
+        feat_idx = np.flatnonzero(keep)
+        scaler = StandardScaler().fit(Xs[:, keep])
+        del Xs, train_rows
 
-    def labels(df, t):
-        th = thresholds.get(t)
-        y = np.full((len(df), 4), np.nan, np.float32)
-        if th is not None:
-            for j, h in enumerate(HORIZONS):
-                tg = df[f"Target_{h}"].to_numpy(float)
-                y[:, j] = np.where(np.isfinite(tg), (tg > th[h]).astype(float), np.nan)
-        return y
+        def prep(df):
+            f = df[FEATURES].to_numpy(np.float64)[:, feat_idx]
+            return np.nan_to_num(scaler.transform(f), nan=0.0, posinf=10, neginf=-10).astype(np.float32)
 
-    Xtr, ytr, Xv, yv, cache = [], [], [], [], {}
-    dropped_label = 0
-    for t, df in data.items():
-        F, Y, d, m = prep(df), labels(df, t), df["Date"].to_numpy(), df["member"].to_numpy()
-        cache[t] = (F, Y, d, m)
-        base = np.arange(WINDOW, len(df), TRAIN_STEP)
-        base = base[m[base]]
-        lab_ok = np.all(np.isfinite(Y[base]), axis=1)
-        in_tr = d[base] < te
-        dropped_label += int((in_tr & ~lab_ok & (t in thresholds)).sum())
-        tr_idx = base[in_tr & lab_ok]
-        v_idx = base[(d[base] >= np.datetime64(fd["val_start"])) & (d[base] < np.datetime64(fd["val_end"])) & lab_ok]
-        if len(tr_idx):
-            Xtr.append(wf.windows(F, tr_idx)); ytr.append(Y[tr_idx])
-        if len(v_idx):
-            Xv.append(wf.windows(F, v_idx)); yv.append(Y[v_idx])
-    Xtr, ytr, Xv, yv = map(np.concatenate, (Xtr, ytr, Xv, yv))
+        def labels(df, t):
+            th = thresholds.get(t)
+            y = np.full((len(df), 4), np.nan, np.float32)
+            if th is not None:
+                for j, h in enumerate(HORIZONS):
+                    tg = df[f"Target_{h}"].to_numpy(float)
+                    y[:, j] = np.where(np.isfinite(tg), (tg > th[h]).astype(float), np.nan)
+            return y
+
+        Xtr, ytr, Xv, yv, cache = [], [], [], [], {}
+        dropped_label = 0
+        for t, df in data.items():
+            F, Y, d, m = prep(df), labels(df, t), df["Date"].to_numpy(), df["member"].to_numpy()
+            cache[t] = (F, Y, d, m)
+            base = np.arange(WINDOW, len(df), TRAIN_STEP)
+            base = base[m[base]]
+            lab_ok = np.all(np.isfinite(Y[base]), axis=1)
+            in_tr = d[base] < te
+            dropped_label += int((in_tr & ~lab_ok & (t in thresholds)).sum())
+            tr_idx = base[in_tr & lab_ok]
+            v_idx = base[(d[base] >= np.datetime64(fd["val_start"])) & (d[base] < np.datetime64(fd["val_end"])) & lab_ok]
+            if len(tr_idx):
+                Xtr.append(wf.windows(F, tr_idx)); ytr.append(Y[tr_idx])
+            if len(v_idx):
+                Xv.append(wf.windows(F, v_idx)); yv.append(Y[v_idx])
+        Xtr, ytr, Xv, yv = map(np.concatenate, (Xtr, ytr, Xv, yv))
+        sample_metadata = {"train_rows_dropped_label_past_last_bar": dropped_label,
+                           "securities_with_threshold": len(thresholds)}
     t_data = time.time() - t0
 
     class EarlyStoppingWithWarmup(tf.keras.callbacks.EarlyStopping):
@@ -294,8 +314,8 @@ def run_job(year: int, k: int, threads: int) -> None:
         if buf:
             flush(buf)
         out = pd.concat(rows, ignore_index=True)
-        out.to_csv(OUT / "forecasts" / f"Y{year}_s{k}_{split}.csv.gz", index=False)
-        if split == "test":
+        out.to_csv(output / "forecasts" / f"Y{year}_s{k}_{split}.csv.gz", index=False)
+        if split == "test" and not comparison:
             for h in HORIZONS:
                 mm = out[f"Class_{h}"].notna()
                 yy = out.loc[mm, f"Class_{h}"]
@@ -304,16 +324,16 @@ def run_job(year: int, k: int, threads: int) -> None:
     meta = {"year": year, "seed_index": k, "seed": seed, "dates": {a: str(b.date()) for a, b in fd.items()},
             "features_sha256": spec["features_sha256"], "features_file_sha256": spec["features_file_sha256"],
             "code_sha256": file_sha(Path(__file__)),
-            "n_train": int(len(Xtr)), "n_val": int(len(Xv)), "train_rows_dropped_label_past_last_bar": dropped_label,
+            "n_train": int(len(Xtr)), "n_val": int(len(Xv)), **sample_metadata,
             "train_pos_rate": ytr.mean(0).round(4).tolist(), "n_features": int(len(feat_idx)),
-            "dropped_features": [FEATURES[i] for i in np.flatnonzero(~keep)],
-            "securities_with_threshold": len(thresholds), "securities_total": len(data),
+            "dropped_features": [name for i, name in enumerate(FEATURES) if i not in feat_idx],
+            "securities_total": len(data),
             "epochs_run": len(va), "best_epoch": best_epoch, "best_val_auc": float(max(va[3:] or va)),
             "test_auc": test_auc, "minutes": round((time.time() - t0) / 60, 2),
             "minutes_split": {"data": round(t_data / 60, 2), "fit": round(t_fit / 60, 2),
                               "forecast": round((time.time() - t0 - t_data - t_fit) / 60, 2)},
             "versions": {"tensorflow": tf.__version__, "numpy": np.__version__, "pandas": pd.__version__}}
-    (OUT / "meta" / f"Y{year}_s{k}.json").write_text(json.dumps(meta, indent=2))
+    (output / "meta" / f"Y{year}_s{k}.json").write_text(json.dumps(meta, indent=2))
     print(json.dumps({x: meta[x] for x in ["year", "seed_index", "n_train", "best_epoch", "best_val_auc", "test_auc",
                                            "minutes", "minutes_split"]}), flush=True)
 
@@ -322,33 +342,54 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["prepare", "job", "run"])
     ap.add_argument("--year", type=int)
+    ap.add_argument("--comparison", action="store_true", help="use corrected head-to-head samples")
     ap.add_argument("--seed-index", type=int, default=0)
     ap.add_argument("--years", default="2016-2024")
     ap.add_argument("--seeds", type=int, default=3)
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--threads", type=int, default=5)
     a = ap.parse_args()
+    if a.comparison and a.mode == "prepare":
+        ap.error("comparison consumes the existing frozen features")
+    if a.comparison:
+        years = [a.year] if a.mode == "job" else wf.parse_years(a.years)
+        if not years or any(year not in range(2016, 2025) for year in years):
+            ap.error("only the registered 2016–2024 development folds are allowed")
+    output = OUT / "model_comparison" / "lstm" if a.comparison else OUT
     for sub in ["forecasts", "meta", "logs"]:
-        (OUT / sub).mkdir(parents=True, exist_ok=True)
+        (output / sub).mkdir(parents=True, exist_ok=True)
     if a.mode == "prepare":
         if (OUT / "feature_spec.json").exists():
             sys.exit("feature_spec.json exists: features are frozen. Delete it only for a deliberate new trial.")
         prepare()
         return
     if a.mode == "job":
-        run_job(a.year, a.seed_index, a.threads)
+        run_job(a.year, a.seed_index, a.threads, comparison=a.comparison)
         return
-    load_frozen()   # refuse to start on a changed feature list
-    jobs = [(y, k) for y in wf.parse_years(a.years) for k in range(a.seeds)
-            if not (OUT / "meta" / f"Y{y}_s{k}.json").exists()]
+    _, spec = load_frozen()   # refuse to start on a changed feature list
+    del _
+    jobs = [(y, k) for y in wf.parse_years(a.years) for k in range(a.seeds)]
+    if a.comparison:
+        from pit_model_label_dates import experiment_provenance, is_resumable
+
+        provenance = experiment_provenance(spec, Path(__file__))
+        jobs = [(y, k) for y, k in jobs if not is_resumable(
+            output / "meta" / f"Y{y}_s{k}.json",
+            tuple(output / "forecasts" / f"Y{y}_s{k}_{split}.csv.gz" for split in ("val", "test")),
+            provenance,
+        )]
+    else:
+        jobs = [(y, k) for y, k in jobs if not (output / "meta" / f"Y{y}_s{k}.json").exists()]
     print(f"[{time.strftime('%H:%M:%S')}] {len(jobs)} jobs, {a.workers} workers x {a.threads} threads", flush=True)
     running, failed = [], []
     while jobs or running:
         while jobs and len(running) < a.workers:
             y, k = jobs.pop(0)
-            log = open(OUT / "logs" / f"Y{y}_s{k}.log", "w")
+            log = open(output / "logs" / f"Y{y}_s{k}.log", "w")
             cmd = [sys.executable, str(Path(__file__)), "job", "--year", str(y), "--seed-index", str(k),
                    "--threads", str(a.threads)]
+            if a.comparison:
+                cmd.append("--comparison")
             running.append((subprocess.Popen(cmd, stdout=log, stderr=subprocess.STDOUT, cwd=ROOT), (y, k), log))
         time.sleep(10)
         for item in running[:]:
