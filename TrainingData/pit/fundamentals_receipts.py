@@ -9,7 +9,9 @@ import pandas as pd
 
 from TrainingData.pit.edgar_preferred import preferred_evidence
 from TrainingData.pit.fundamentals_gate import CALENDAR, END
-from TrainingData.pit.fundamentals_pipeline import digest, load_ccm_links, load_snapshot
+from TrainingData.pit.fundamentals_pipeline import ROSTER_SHA256, digest, load_ccm_links, load_snapshot
+
+FORMS = {"10-K", "10-Q", "10-K/A", "10-Q/A"}
 
 
 def duration_fact(facts, accession, end, minimum, maximum):
@@ -43,6 +45,9 @@ def accession_receipts(submissions, facts, spans, labels, source):
         active = spans.loc[spans.start.le(period) & spans.stop.ge(public_date)]
         issuers = active.gvkey.unique()
         key = {"cik": filing.cik, "accession": filing.accessionNumber, "period": period}
+        if filing.form not in FORMS:
+            unresolved.append(dict(key, reason="unsupported_periodic_form"))
+            continue
         if len(issuers) != 1:
             unresolved.append(dict(key, reason="missing_or_ambiguous_historical_issuer"))
             continue
@@ -81,6 +86,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("input", type=Path)
     parser.add_argument("snapshot_manifest", type=Path, help="JSON list of verified snapshot basenames")
+    parser.add_argument("output", type=Path, help="New local directory for immutable receipt evidence")
     args = parser.parse_args()
     base = args.input
     paths = json.loads(args.snapshot_manifest.read_text())
@@ -97,8 +103,12 @@ def main():
     labels = pd.concat(labels, ignore_index=True).dropna().drop_duplicates()
     labels = labels.loc[~labels.duplicated(["gvkey", "period"], keep=False)]
     lookup = {r[:2]: r[2:] for r in labels.itertuples(index=False, name=None)}
-    roster = pd.read_csv(base / "roster.csv", parse_dates=["signal"])
-    links = load_ccm_links(sorted(base.glob("ccm_*.csv.gz")), roster)
+    roster_path = base / "roster.csv"
+    if digest(roster_path) != ROSTER_SHA256:
+        raise ValueError("Frozen roster hash mismatch")
+    roster = pd.read_csv(roster_path, parse_dates=["signal"])
+    ccm = sorted(base.glob("ccm_*.csv.gz"))
+    links = load_ccm_links(ccm, roster)
     spans = links[["gvkey", "cik", "start", "stop"]].drop_duplicates()
     receipts, unresolved = [], []
     for cik, group in spans.groupby("cik"):
@@ -108,6 +118,8 @@ def main():
             unresolved.append({"cik": cik, "reason": "missing_sec_filing_source"})
             continue
         filings = pd.read_csv(submissions_path, dtype=str).drop_duplicates()
+        if not filings.cik.eq(cik).all():
+            raise ValueError(f"SEC submissions contain an unexpected issuer for CIK {cik}")
         facts = json.loads(facts_path.read_text())
         source = f"sec-submissions:{digest(submissions_path)};sec-companyfacts:{digest(facts_path)}"
         preferred_path = base / "sec_preferred_evidence" / f"{cik}.json"
@@ -119,12 +131,16 @@ def main():
         unresolved.extend(rejected)
     if not receipts:
         raise RuntimeError("No exact-date receipts available")
-    out = base / "candidate_filing_contexts.parquet"
+    args.output.mkdir(parents=True, exist_ok=False)
+    out = args.output / "candidate_filing_contexts.parquet"
+    unresolved_path = args.output / "unresolved_filing_contexts.parquet"
     pd.DataFrame(receipts).to_parquet(out, index=False)
-    pd.DataFrame(unresolved).to_parquet(base / "unresolved_filing_contexts.parquet", index=False)
+    pd.DataFrame(unresolved).to_parquet(unresolved_path, index=False)
     manifest = {"candidate_sha256": digest(out), "vendor_sources": vendor_sources,
-                "snapshot_selection_sha256": digest(args.snapshot_manifest)}
-    (base / "candidate_filing_context_manifest.json").write_text(json.dumps(manifest, indent=2))
+                "snapshot_selection_sha256": digest(args.snapshot_manifest),
+                "roster_sha256": ROSTER_SHA256, "ccm_sources": {path.name: digest(path) for path in ccm},
+                "unresolved_sha256": digest(unresolved_path), "code_sha256": digest(Path(__file__))}
+    (args.output / "candidate_filing_context_manifest.json").write_text(json.dumps(manifest, indent=2))
     print(f"{len(receipts)} candidate receipts and {len(unresolved)} unresolved source records")
 
 

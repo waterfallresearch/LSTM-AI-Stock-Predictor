@@ -5,7 +5,7 @@ import pytest
 
 from TrainingData.pit.fundamentals_pipeline import (
     load_ccm_links, load_crsp_daily, load_crsp_delistings, load_crsp_names,
-    load_snapshot, market_inputs, reconcile_vintages,
+    digest, load_snapshot, market_inputs, reconcile_vintages, validate_contexts,
 )
 from TrainingData.pit.fundamentals_features import build_features
 
@@ -140,3 +140,29 @@ def test_crsp_names_clip_open_end_and_delistings_reject_confirmation(tmp_path):
     delist.write_text("permno,delistingdt\n1,2025-01-02\n")
     with pytest.raises(ValueError, match="development delisting date"):
         load_crsp_delistings([delist])
+
+
+def test_filing_receipts_detect_changed_sec_source_bytes(tmp_path):
+    import json
+
+    cik = "0000000123"
+    metadata = tmp_path / "metadata"
+    facts = tmp_path / "facts"
+    metadata.mkdir()
+    facts.mkdir()
+    source = metadata / f"{cik}.csv"
+    source.write_text("accessionNumber,form,reportDate,acceptanceDateTime\n"
+                      "a,10-Q,2024-06-30,2024-08-01T20:00:00Z\n")
+    facts_file = facts / f"{cik}.json"
+    facts_file.write_text(json.dumps({"Assets": [{"accn": "a", "end": "2024-06-30", "val": 10}],
+                                      "StockholdersEquity": [], "NetIncomeLoss": []}))
+    context = pd.DataFrame([{
+        "cik": cik, "accession": "a", "form": "10-Q", "period": pd.Timestamp("2024-06-30"),
+        "accepted_at": pd.Timestamp("2024-08-01T20:00:00Z"), "assets": 10,
+        "income_start": pd.NaT, "parent_equity": None, "income": None, "preferred_verified": False,
+        "receipt": f"sec-submissions:{digest(source)};sec-companyfacts:{digest(facts_file)}",
+    }])
+    assert validate_contexts(context, metadata, facts) == [source, facts_file]
+    facts_file.write_text(facts_file.read_text() + "\n")
+    with pytest.raises(ValueError, match="Missing or conflicting filing evidence"):
+        validate_contexts(context, metadata, facts)

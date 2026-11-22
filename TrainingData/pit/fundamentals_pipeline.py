@@ -222,6 +222,7 @@ def validate_contexts(contexts, metadata_dir, facts_dir):
         metadata = metadata_dir / f"{cik}.csv"
         facts_file = facts_dir / f"{cik}.json"
         sources.extend([metadata, facts_file])
+        required_hashes = {f"sec-submissions:{digest(metadata)}", f"sec-companyfacts:{digest(facts_file)}"}
         submissions = pd.read_csv(metadata, dtype=str)
         facts = json.loads(facts_file.read_text())
         preferred_file = facts_dir.parent / "sec_preferred_evidence" / f"{cik}.json"
@@ -236,7 +237,8 @@ def validate_contexts(contexts, metadata_dir, facts_dir):
                 & submissions.reportDate.eq(row.period.date().isoformat())
                 & pd.to_datetime(submissions.acceptanceDateTime, utc=True, format="mixed").eq(row.accepted_at)
             ]
-            if len(matching) != 1 or not isinstance(row.receipt, str) or not row.receipt.strip():
+            receipt_fields = set(row.receipt.split(";")) if isinstance(row.receipt, str) else set()
+            if len(matching) != 1 or not required_hashes.issubset(receipt_fields):
                 raise ValueError(f"Missing or conflicting filing evidence for {row.accession}")
             period = row.period.date().isoformat()
             start = row.income_start.date().isoformat() if pd.notna(row.income_start) else None
@@ -427,6 +429,13 @@ def main():
     snapshot_conflicts = []
     vendor = load_snapshot(snapshots, quarantined=snapshot_conflicts)
     contexts_file = base / "verified_filing_contexts.parquet"
+    context_manifest = base / "reviewed_context_manifest.json"
+    context_review = json.loads(context_manifest.read_text())
+    candidate_manifest = base / "candidate_filing_context_manifest.json"
+    if (context_review.get("reviewer") != "Claude" or context_review.get("decision") != "clear"
+            or context_review.get("candidate_manifest_sha256") != digest(candidate_manifest)
+            or context_review.get("reviewed_context_sha256") != digest(contexts_file)):
+        raise ValueError("Filing contexts require an independent review bound to their exact bytes")
     contexts = pd.read_parquet(contexts_file)
     if contexts.accepted_at.gt(CALENDAR.session_close(END)).any() or contexts.period.gt(END).any():
         raise ValueError("Confirmation filing in context receipts")
@@ -492,7 +501,7 @@ def main():
               "snapshot_conflicts": pd.DataFrame(snapshot_conflicts)}
     for name, table in tables.items():
         table.to_parquet(args.output / f"{name}.parquet", index=False)
-    files = [roster_file, contexts_file, *snapshots, *paths.values(),
+    files = [roster_file, contexts_file, context_manifest, candidate_manifest, *snapshots, *paths.values(),
              *quote_exports, *names_exports, *delisting_exports, *ccm_exports, *edgar_sources]
     manifest = {"code_sha256": code_fingerprint(),
                 "inputs": {path.relative_to(base).as_posix(): digest(path) for path in files},
@@ -507,7 +516,8 @@ def code_fingerprint():
     return {
         name: digest(directory / name)
         for name in ("fundamentals_pipeline.py", "fundamentals_features.py",
-                     "fundamentals_gate.py", "fundamentals_anchors.py", "edgar_preferred.py")
+                     "fundamentals_gate.py", "fundamentals_anchors.py", "edgar_preferred.py",
+                     "fundamentals_receipts.py")
     }
 
 
