@@ -1,8 +1,35 @@
 # Point-in-time fundamentals gate
 
-**Decision — blocked on source access.** Claude reviewed the source check and signed off on the blocked status. The full coverage audit has no clearance. The 49-trial strategy ledger and the sealed 2025 confirmation are intact.
+**Decision — FAIL on coverage.** The EDGAR and WRDS route enabled a full measurement on the preregistered universe. All required coverage floors failed. Claude cleared this disposition and closure to predictive promotion after reviewing the arithmetic and decision logic from the reported evidence. The strategy ledger remains at 49 trials and the 2025 confirmation remains sealed.
 
-## Evidence
+## Full coverage measurement
+
+| Measure | Observed | Required |
+|---|---:|---:|
+| Complete three-feature coverage | 6,898 / 54,475 (12.66%) | 80% |
+| Annual coverage range | 6.34%–16.61% | 70% each year |
+| Market-cap tercile conservative bounds | 13.18%, 13.43%, 11.02% | 60% each |
+| Delisted within 12 months | 153 / 890 (17.19%) | 60% |
+
+Profitability was available for 37,139 security-months, asset growth for 41,096, and book-to-market for 8,703. Verified inputs came from WRDS, so the coverage with and without LSEG is identical. The 6,037 observations without a complete 12-month delisting window remain in the overall denominator. The size bounds include all 258 observations with unknown size in each denominator. Monthly coverage and failure counts are saved in the local coverage JSON. There were 38,148 rows with incomplete inputs, 5,369 with stale filings, 4,054 with no verified filing, and six with an ambiguous vintage.
+
+Book-to-market is the binding constraint. Its coverage caps achievable complete coverage at 15.98% overall, 12.66%–19.02% across years, 13.97%–17.29% across known-size terciles, and 22.02% for the observed delisting subgroup. The strict accession-level common equity and preferred-stock evidence requirement contributed to the gap. The 6,898 complete rows are ineligible for predictive work under this specification. Changing the evidence rule or adding a fallback would require a new preregistration.
+
+An independent implementation reproduced each feature availability flag for every key using the same frozen inputs. A separate recount verified the frozen roster keys and the reported coverage from the saved panel. Independent Decimal arithmetic reaggregated 53,782 CRSP issuer-date caps using prior-session prices, shares, and expected common share classes, with maximum relative difference of 2.22e-16. That check verifies units and aggregation on the supplied CRSP inputs. Of the security-months with missing caps, six lacked a dated class mapping and 252 were mapped but lacked a usable issuer cap.
+
+The frozen filing sample contains 120 accepted and 40 quarantined cases. The automated run cleared 119 accepted and corroborated 29 quarantined cases. Supplemental public filing checks explain the remaining flags, and Claude reviewed them as documented explanations. The original audit receipts retain their flags. The discrepancies include a conflicting fiscal-year label, two nonfinancial amendments, five annual amendments outside the frozen Q4 rule, three missing verified nine-month contexts, and one issuer using a different parent-income tag. These counts describe the stratified sample.
+
+| Verified artifact | SHA-256 |
+|---|---|
+| Reviewed preflight | `56d12b861263a63c4d791ad9ee3435567fe34aa895d871358dce02ac7045f6ef` |
+| Coverage JSON | `26ac088e3eaa379e44dd5d2aaf54a1e0a8982f3d037e4bf138bf1a3d69c60f4b` |
+| Panel | `6a64f585c16b22cea5a1c2cb3cd84df03826554fb4ffea4c7a243a81b5267e47` |
+| Independent coverage recount | `03ce34b17ab1d4d217c25c478fa935cceda0c0cf8cd264b7cdde196f79194d79` |
+| Frozen filing sample | `10776346ca2ab70aaa627f00b1f1667ba6cc4e34144494ea03b43bb771fee977` |
+| Supplemental evidence manifest | `aa3e872942818c7e013109a75955c2b711a9588742fae1e66d6e0f31edc7846b` |
+| Independent CRSP cap audit | `5ce63c622394921e4aab4e777005b538a9d6c4ba729fb726850b887278a08964` |
+
+## Earlier source-access checkpoint
 
 - The dated CRSP S&P 500 roster contains 54,475 unique security-months across 108 XNYS month-ends in 2016–2024, with 503–506 securities per month. An independent pass over the saved CSV reproduced the counts and hash. The roster is the security-level denominator, including historical members that later delisted.
 - The CCM lookup returned one candidate issuer link on 54,374 security-months, none on 41, and competing candidates on 60. A unique candidate still requires dated issuer verification. These counts measure link candidates only. Complete signal-date fundamentals coverage remains unmeasured.
