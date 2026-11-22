@@ -57,6 +57,10 @@ def _latest_known(group: pd.DataFrame, prior: pd.Timestamp) -> pd.DataFrame:
         return usable
     # A verified amendment replaces the original only after its effective session.
     by_period = ["fiscal_year", "fiscal_quarter"]
+    by_accession = by_period + ["accession"]
+    # Daily WRDS slices of the same filing describe one filing, not competing originals.
+    if "vendor_date" in usable.columns:
+        usable = usable.sort_values(["usable", "vendor_date"]).drop_duplicates(by_accession, keep="last")
     originals = usable.loc[usable.form.isin(["10-Q", "10-K"])]
     unique_original = originals.loc[~originals.duplicated(by_period, keep=False)]
     baseline = unique_original[by_period + ["period", "accepted_at"]].rename(
