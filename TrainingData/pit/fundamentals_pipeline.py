@@ -32,6 +32,10 @@ CRSP_DAILY_COLUMNS = {
     "Security Type": "securitytype", "Security Sub-Type": "securitysubtype",
     "Daily Price": "price", "Daily Price Flag": "price_flag", "Shares Outstanding": "shrout",
 }
+CRSP_NAMES_COLUMNS = {
+    key: value for key, value in CRSP_DAILY_COLUMNS.items()
+    if value in {"permno", "permco", "start", "stop", "securitytype", "securitysubtype"}
+}
 
 
 def digest(path):
@@ -62,7 +66,8 @@ def load_snapshot(paths, *, quarantined=None):
     """Read daily browser snapshots with their query point dates intact."""
     frames = [_read_wrds(path, WRDS_COLUMNS, WRDS_CSV_ALIASES) for path in paths]
     data = pd.concat(frames, ignore_index=True)
-    data = data[list(WRDS_COLUMNS.values()) + (["niy"] if "niy" in data else [])].copy()
+    extras = [column for column in ("niy", "pstkq", "fqtr", "fyearq") if column in data]
+    data = data[list(WRDS_COLUMNS.values()) + extras].copy()
     data["gvkey"] = data.gvkey.astype(str).str.zfill(6)
     for field in ("period", "vintage"):
         data[field] = pd.to_datetime(data[field], errors="raise")
@@ -80,10 +85,8 @@ def load_snapshot(paths, *, quarantined=None):
             raise ValueError("Competing WRDS rows for the same issuer, period and point date")
         quarantined.extend(conflicts.to_dict("records"))
         data = data.loc[~competing].copy()
-    for field in ("atq", "ceqq", "niq"):
+    for field in ("atq", "ceqq", "niq", *extras):
         data[field] = pd.to_numeric(data[field].replace({".": np.nan, "": np.nan}), errors="raise")
-    if "niy" in data:
-        data["niy"] = pd.to_numeric(data.niy.replace({".": np.nan, "": np.nan}), errors="raise")
     return data
 
 
@@ -107,6 +110,70 @@ def load_crsp_daily(paths, prior_sessions):
     if quotes.duplicated(["session", "permno", "permco"]).any():
         raise ValueError("Competing CRSP prices or share counts for one class")
     return quotes
+
+
+def load_crsp_names(paths):
+    """Build the expected common-share listing spells independently of quotes."""
+    aliases = {"secinfostartdt": "start", "secinfoenddt": "stop"}
+    frames = [_read_wrds(path, CRSP_NAMES_COLUMNS, aliases) for path in paths]
+    data = pd.concat(frames, ignore_index=True)[list(CRSP_NAMES_COLUMNS.values())]
+    start = pd.to_datetime(data.start, errors="raise")
+    if start.isna().any() or start.gt(END).any():
+        raise ValueError("Names export contains a non-development security start date")
+    stop = data.stop.fillna("2024-12-31").replace({"": "2024-12-31", ".": "2024-12-31"})
+    if not stop.str.fullmatch(r"\d{4}-\d{2}-\d{2}").all():
+        raise ValueError("Invalid CRSP names interval end date")
+    stop = pd.to_datetime(stop.where(stop.le("2024-12-31"), "2024-12-31"), errors="raise")
+    common = data.securitytype.eq("EQTY") & data.securitysubtype.eq("COM")
+    return data.assign(start=start, stop=stop).loc[
+        common & stop.ge(pd.Timestamp("2016-01-01")), ["permno", "permco", "start", "stop"]
+    ].astype({"permno": "int64", "permco": "int64"}).drop_duplicates()
+
+
+def load_crsp_delistings(paths):
+    """Parse only verified development-period CRSP security delisting dates."""
+    frames = [_read_wrds(path, {"PERMNO": "permno", "Delisting Date": "delist_date"},
+                         {"delistingdt": "delist_date"}) for path in paths]
+    events = pd.concat(frames, ignore_index=True)[["permno", "delist_date"]].drop_duplicates()
+    events["delist_date"] = pd.to_datetime(events.delist_date, errors="raise")
+    if events.delist_date.isna().any() or events.delist_date.gt(END).any():
+        raise ValueError("Invalid development delisting date")
+    events["permno"] = events.permno.astype("int64")
+    if events.permno.duplicated().any():
+        raise ValueError("Competing CRSP security delisting dates")
+    return events
+
+
+def load_ccm_links(paths, roster):
+    """Intersect dated CCM security links with historical CIK descriptions."""
+    keys = ["gvkey", "permno", "linkdt", "linkenddt", "linktype", "linkprim",
+            "hchgdt", "hchgenddt", "hcik"]
+    frames = [pd.read_csv(path, dtype=str, usecols=keys) for path in paths]
+    data = pd.concat(frames, ignore_index=True)
+    for field in ("linkdt", "linkenddt", "hchgdt", "hchgenddt"):
+        data[field] = pd.to_datetime(data[field], errors="raise")
+        if data[field].isna().any() or data[field].gt(END).any():
+            raise ValueError(f"CCM extract has an invalid development {field}")
+    eligible = data.linktype.isin(["LC", "LU"]) & data.linkprim.isin(["P", "C"])
+    eligible &= data.hcik.str.fullmatch(r"0*\d*[1-9]\d*", na=False)
+    data = data.loc[eligible].copy()
+    data["gvkey"] = data.gvkey.str.zfill(6)
+    data["permno"] = data.permno.astype("int64")
+    data["cik"] = data.hcik.str.zfill(10)
+    data["start"] = data[["linkdt", "hchgdt"]].max(axis=1)
+    data["stop"] = data[["linkenddt", "hchgenddt"]].min(axis=1)
+    identity = ["permno", "gvkey", "cik"]
+    spells = data.loc[data.start.le(data.stop), identity + ["start", "stop"]].drop_duplicates()
+    spells = spells.sort_values(identity + ["start", "stop"])
+    spells["last_end"] = spells.groupby(identity).stop.cummax()
+    previous_end = spells.groupby(identity).last_end.shift()
+    splits = previous_end.isna() | spells.start.gt(previous_end + pd.Timedelta(days=1))
+    spells["span"] = splits.cumsum()
+    spans = spells.groupby(identity + ["span"], as_index=False).agg(start=("start", "min"), stop=("stop", "max"))
+    joined = roster[["signal", "permno"]].merge(
+        spans.drop(columns="span"), on="permno"
+    )
+    return joined.loc[joined.signal.between(joined.start, joined.stop)].drop_duplicates()
 
 
 def market_inputs(roster, listing, quotes, delistings):
@@ -306,6 +373,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("inputs", type=Path, help="Local export and provenance directory")
     parser.add_argument("output", type=Path, help="New local output directory")
+    parser.add_argument("--snapshot-manifest", type=Path,
+                        help="JSON array naming only the verified production WRDS batches")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--preflight", action="store_true", help="Validate and assemble source records only")
     mode.add_argument("--review-receipt", type=Path, help="Claude clearance for the exact preflight")
@@ -334,8 +403,16 @@ def main():
     if digest(roster_file) != ROSTER_SHA256:
         raise ValueError("Frozen roster hash mismatch")
     roster = pd.read_csv(roster_file, parse_dates=["signal", "prior_session"])
-    snapshots = sorted((*base.glob("snapshot_*.htm"), *base.glob("snapshot_*.html"),
-                        *base.glob("snapshot_*.csv"), *base.glob("snapshot_*.csv.gz")))
+    if args.snapshot_manifest:
+        entries = json.loads(args.snapshot_manifest.read_text())
+        if not isinstance(entries, list) or not all(
+            isinstance(name, str) and Path(name).name == name for name in entries
+        ) or len(set(entries)) != len(entries):
+            raise ValueError("Snapshot manifest requires unique local export basenames")
+        snapshots = [base / name for name in entries]
+    else:
+        snapshots = sorted((*base.glob("snapshot_*.htm"), *base.glob("snapshot_*.html"),
+                            *base.glob("snapshot_*.csv"), *base.glob("snapshot_*.csv.gz")))
     if not snapshots:
         raise ValueError("Missing WRDS browser snapshot exports")
     snapshot_conflicts = []
@@ -345,7 +422,33 @@ def main():
     if contexts.accepted_at.gt(CALENDAR.session_close(END)).any() or contexts.period.gt(END).any():
         raise ValueError("Confirmation filing in context receipts")
     edgar_sources = validate_contexts(contexts, base / "edgar_metadata", base / "edgar_facts")
-    paths = {name: base / f"{name}.parquet" for name in ("links", "listing", "delistings")}
+    paths = {}
+    link_path = base / "links.parquet"
+    if link_path.exists():
+        paths["links"] = link_path
+    ccm_exports = []
+    if "links" not in paths:
+        ccm_exports = sorted((*base.glob("ccm_*.csv.gz"), *base.glob("ccm_*.csv")))
+        if not ccm_exports:
+            raise ValueError("Missing historical CCM crosswalk exports")
+    delisting_path = base / "delistings.parquet"
+    if delisting_path.exists():
+        paths["delistings"] = delisting_path
+    delisting_exports = []
+    if "delistings" not in paths:
+        delisting_exports = sorted((*base.glob("crsp_delisting_*.csv.gz"), *base.glob("crsp_delisting_*.csv"),
+                                   *base.glob("crsp_delisting_*.htm")))
+        if not delisting_exports:
+            raise ValueError("Missing development-period CRSP delisting exports")
+    listing_path = base / "listing.parquet"
+    if listing_path.exists():
+        paths["listing"] = listing_path
+    names_exports = []
+    if "listing" not in paths:
+        names_exports = sorted((*base.glob("crsp_names_*.csv.gz"), *base.glob("crsp_names_*.csv"),
+                                *base.glob("crsp_names_*.htm")))
+        if not names_exports:
+            raise ValueError("Missing independently dated CRSP names exports")
     quote_path = base / "quotes.parquet"
     if quote_path.exists():
         paths["quotes"] = quote_path
@@ -356,6 +459,12 @@ def main():
         if not quote_exports:
             raise ValueError("Missing CRSP prior-session quote exports")
     data = {name: pd.read_parquet(path) for name, path in paths.items()}
+    if ccm_exports:
+        data["links"] = load_ccm_links(ccm_exports, roster)
+    if delisting_exports:
+        data["delistings"] = load_crsp_delistings(delisting_exports)
+    if names_exports:
+        data["listing"] = load_crsp_names(names_exports)
     if quote_exports:
         data["quotes"] = load_crsp_daily(quote_exports, roster.prior_session)
     for field in ("start", "stop", "signal"):
@@ -374,10 +483,13 @@ def main():
               "snapshot_conflicts": pd.DataFrame(snapshot_conflicts)}
     for name, table in tables.items():
         table.to_parquet(args.output / f"{name}.parquet", index=False)
-    files = [roster_file, contexts_file, *snapshots, *paths.values(), *quote_exports, *edgar_sources]
+    files = [roster_file, contexts_file, *snapshots, *paths.values(),
+             *quote_exports, *names_exports, *delisting_exports, *ccm_exports, *edgar_sources]
     manifest = {"code_sha256": code_fingerprint(),
                 "inputs": {path.relative_to(base).as_posix(): digest(path) for path in files},
                 "outputs": {path.name: digest(path) for path in args.output.glob("*.parquet")}}
+    if args.snapshot_manifest:
+        manifest["snapshot_manifest_sha256"] = digest(args.snapshot_manifest)
     (args.output / "preflight_manifest.json").write_text(json.dumps(manifest, indent=2))
 
 

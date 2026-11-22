@@ -76,7 +76,7 @@ def test_sampling_is_seeded_stratified_and_keeps_mandatory_cases():
     assert set(sample.loc[sample.mandatory, "audit_id"]) == {10, 190}
     audit = sample[["audit_id"]].assign(resolved=True, cap_error=0.01)
     metrics = {"overall": 0.80, "year": dict.fromkeys(range(2016, 2025), 0.70),
-               "size_tercile": dict.fromkeys((1, 2, 3), 0.60),
+               "size_tercile_lower_bound": dict.fromkeys((1, 2, 3), 0.60),
                "delisting": {"denominator": 1, "rate": 0.60}}
     assert assess_gate(metrics, audit, sample)["decision"] == "pass"
     assert assess_gate(dict(metrics, overall=0.79), audit, sample)["decision"] == "fail"
@@ -100,6 +100,22 @@ def test_link_admission_requires_two_anchors_known_on_prior_session():
     assert admit_links(roster, windows, anchors).gvkey.isna().all()
     anchors.loc[1, "usable"] = prior
     assert admit_links(roster, windows, anchors).gvkey.fillna("").tolist() == ["A", ""]
+
+
+def test_unknown_size_rows_bound_every_fixed_tercile():
+    panel = pd.DataFrame({
+        "signal": pd.to_datetime(["2024-01-31"] * 4),
+        "size_tercile": [1, 2, 3, float("nan")],
+        "delist_date": pd.to_datetime([None] * 4),
+        "profitability": [1, 1, 1, 1],
+        "asset_growth": [1, 1, 1, 1],
+        "book_to_market": [1, 1, 1, float("nan")],
+        "status": ["complete", "complete", "complete", "incomplete_inputs"],
+    })
+    metrics = coverage(panel)
+    assert list(metrics["size_tercile"].values()) == [1, 1, 1]
+    assert list(metrics["size_tercile_lower_bound"].values()) == [0.5, 0.5, 0.5]
+    assert metrics["missing_size_tercile"] == 1
 
 
 def test_amendment_timing_and_frozen_denominator():

@@ -1,8 +1,11 @@
+import gzip
+
 import pandas as pd
 import pytest
 
 from TrainingData.pit.fundamentals_pipeline import (
-    load_crsp_daily, load_snapshot, market_inputs, reconcile_vintages,
+    load_ccm_links, load_crsp_daily, load_crsp_delistings, load_crsp_names,
+    load_snapshot, market_inputs, reconcile_vintages,
 )
 from TrainingData.pit.fundamentals_features import build_features
 
@@ -105,3 +108,35 @@ def test_snapshot_quarantines_competing_point_date_rows(tmp_path):
     assert load_snapshot([path], quarantined=quarantine).vintage.tolist() == [pd.Timestamp("2024-07-31")]
     assert len(quarantine) == 1
     assert quarantine[0]["reason"] == "competing_wrds_point_date"
+
+
+def test_ccm_uses_dated_cik_and_preserves_gaps(tmp_path):
+    path = tmp_path / "ccm.csv.gz"
+    path_frame = pd.DataFrame([
+        ("001234", 1, "2014-01-01", "2024-12-31", "LC", "P", "2015-01-01", "2016-01-31", "23"),
+        ("001234", 1, "2014-01-01", "2024-12-31", "LC", "P", "2016-02-01", "2016-03-31", "23"),
+        ("001234", 1, "2014-01-01", "2024-12-31", "LC", "P", "2016-05-01", "2024-12-31", "42"),
+    ], columns=["gvkey", "permno", "linkdt", "linkenddt", "linktype", "linkprim",
+                "hchgdt", "hchgenddt", "hcik"])
+    path_frame.to_csv(path, index=False)
+    roster = pd.DataFrame({"permno": [1, 1, 1], "signal": pd.to_datetime(
+        ["2016-02-29", "2016-04-29", "2016-05-31"])})
+    links = load_ccm_links([path], roster)
+    assert links.cik.tolist() == ["0000000023", "0000000042"]
+    assert links.start.iloc[0] == pd.Timestamp("2015-01-01")
+    assert links.signal.tolist() == [pd.Timestamp("2016-02-29"), pd.Timestamp("2016-05-31")]
+
+
+def test_crsp_names_clip_open_end_and_delistings_reject_confirmation(tmp_path):
+    names = tmp_path / "names.csv.gz"
+    names.write_bytes(gzip.compress(
+        b"PERMNO,PERMCO,SecInfoStartDt,SecInfoEndDt,SecurityType,SecuritySubType\n"
+        b"1,7,2015-01-01,9999-12-31,EQTY,COM\n"
+        b"2,7,2015-01-01,9999-12-31,EQTY,PREF\n"))
+    records = load_crsp_names([names])
+    assert records.permno.tolist() == [1]
+    assert records.stop.iloc[0] == pd.Timestamp("2024-12-31")
+    delist = tmp_path / "delist.csv"
+    delist.write_text("permno,delistingdt\n1,2025-01-02\n")
+    with pytest.raises(ValueError, match="development delisting date"):
+        load_crsp_delistings([delist])

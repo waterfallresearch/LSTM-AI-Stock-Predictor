@@ -172,6 +172,9 @@ def coverage(panel: pd.DataFrame) -> dict:
     complete = panel[FEATURES].notna().all(axis=1)
     years = complete.groupby(panel.signal.dt.year).mean()
     sizes = complete.groupby(panel.size_tercile).mean().reindex([1, 2, 3])
+    counts = complete.groupby(panel.size_tercile).agg(["sum", "count"]).reindex([1, 2, 3])
+    unknown_size = int(panel.size_tercile.isna().sum())
+    lower_sizes = counts["sum"] / (counts["count"] + unknown_size)
     observed = (panel.signal + pd.DateOffset(years=1)).le(END)
     delists = observed & panel.delist_date.gt(panel.signal) & (
         panel.delist_date.le(panel.signal + pd.DateOffset(years=1))
@@ -182,9 +185,10 @@ def coverage(panel: pd.DataFrame) -> dict:
         "overall": float(complete.mean()),
         "year": years.to_dict(),
         "size_tercile": sizes.to_dict(),
+        "size_tercile_lower_bound": lower_sizes.to_dict(),
         "delisting": {"denominator": int(delists.sum()), "rate": float(complete[delists].mean())},
         "delisting_censored": int((~observed).sum()),
-        "missing_size_tercile": int(panel.size_tercile.isna().sum()),
+        "missing_size_tercile": unknown_size,
         "month": complete.groupby(panel.signal.dt.strftime("%Y-%m")).mean().to_dict(),
         "status": panel.status.value_counts().to_dict(),
     }
@@ -231,12 +235,13 @@ def assess_gate(metrics: dict, audit: pd.DataFrame, frozen_sample: pd.DataFrame)
     verified = receipts.resolved.eq(True) & cap_pass
     if len(frozen_sample) != 160 or not verified.all():
         return {"decision": "blocked", "unresolved_audit_rows": int((~verified).sum())}
+    sizes = metrics["size_tercile_lower_bound"]
     floors = {
         "overall": metrics["overall"] >= 0.80,
         "every_year": set(metrics["year"]) == set(range(2016, 2025))
         and all(rate >= 0.70 for rate in metrics["year"].values()),
-        "every_size_tercile": set(metrics["size_tercile"]) == {1, 2, 3}
-        and all(rate >= 0.60 for rate in metrics["size_tercile"].values()),
+        "every_size_tercile": set(sizes) == {1, 2, 3}
+        and all(rate >= 0.60 for rate in sizes.values()),
         "delisting": metrics["delisting"]["denominator"] > 0
         and metrics["delisting"]["rate"] >= 0.60,
     }
