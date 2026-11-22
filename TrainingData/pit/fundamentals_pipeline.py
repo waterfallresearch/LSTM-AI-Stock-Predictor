@@ -91,6 +91,24 @@ def load_snapshot(paths, *, quarantined=None):
     return data
 
 
+def compact_snapshot_batches(paths, quarantined):
+    """Retain the first date of each equal value state in disjoint WRDS batches."""
+    batches = []
+    observed = {}
+    for path in paths:
+        data = load_snapshot([path], quarantined=quarantined)
+        spans = data.groupby("gvkey").vintage.agg(["min", "max"])
+        for gvkey, row in spans.iterrows():
+            existing = observed.setdefault(gvkey, [])
+            if any(row["min"] <= stop and row["max"] >= start for start, stop in existing):
+                raise ValueError(f"Overlapping production WRDS batches for {gvkey}")
+            existing.append((row["min"], row["max"]))
+        state_cols = [column for column in data if column != "vintage"]
+        batches.append(data.sort_values("vintage").drop_duplicates(state_cols))
+    data = pd.concat(batches, ignore_index=True).sort_values("vintage")
+    return data.drop_duplicates([column for column in data if column != "vintage"])
+
+
 def load_crsp_daily(paths, prior_sessions):
     """Normalize quote evidence. Expected classes must come from a separate names export."""
     aliases = {"dlycaldt": "session", "secinfostartdt": "start", "secinfoenddt": "stop",
@@ -386,6 +404,8 @@ def main():
     parser.add_argument("output", type=Path, help="New local output directory")
     parser.add_argument("--snapshot-manifest", type=Path,
                         help="JSON array naming only the verified production WRDS batches")
+    parser.add_argument("--candidate-manifest", type=Path,
+                        help="Reviewed candidate manifest inside the input directory")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--preflight", action="store_true", help="Validate and assemble source records only")
     mode.add_argument("--review-receipt", type=Path, help="Claude clearance for the exact preflight")
@@ -407,8 +427,11 @@ def main():
         panel = build_features(pd.read_parquet(base / "panel_inputs.parquet"),
                                pd.read_parquet(base / "vintages.parquet"))
         args.output.mkdir(parents=True, exist_ok=False)
-        panel.to_parquet(args.output / "fundamentals_panel.parquet", index=False)
-        (args.output / "coverage.json").write_text(json.dumps(coverage(panel), indent=2))
+        panel_path = args.output / "fundamentals_panel.parquet"
+        panel.to_parquet(panel_path, index=False)
+        results = dict(coverage(panel), preflight_sha256=digest(manifest_file),
+                       panel_sha256=digest(panel_path), review_sha256=digest(args.review_receipt))
+        (args.output / "coverage.json").write_text(json.dumps(results, indent=2))
         return
     roster_file = base / "roster.csv"
     if digest(roster_file) != ROSTER_SHA256:
@@ -427,11 +450,13 @@ def main():
     if not snapshots:
         raise ValueError("Missing WRDS browser snapshot exports")
     snapshot_conflicts = []
-    vendor = load_snapshot(snapshots, quarantined=snapshot_conflicts)
+    vendor = compact_snapshot_batches(snapshots, snapshot_conflicts)
     contexts_file = base / "verified_filing_contexts.parquet"
     context_manifest = base / "reviewed_context_manifest.json"
     context_review = json.loads(context_manifest.read_text())
-    candidate_manifest = base / "candidate_filing_context_manifest.json"
+    candidate_manifest = args.candidate_manifest or base / "candidate_filing_context_manifest.json"
+    if not candidate_manifest.resolve().is_relative_to(base.resolve()):
+        raise ValueError("Candidate manifest must be inside the input directory")
     if (context_review.get("reviewer") != "Claude" or context_review.get("decision") != "clear"
             or context_review.get("candidate_manifest_sha256") != digest(candidate_manifest)
             or context_review.get("reviewed_context_sha256") != digest(contexts_file)):

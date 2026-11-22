@@ -235,11 +235,12 @@ def assess_gate(metrics: dict, audit: pd.DataFrame, frozen_sample: pd.DataFrame)
     verified = receipts.resolved.eq(True) & cap_pass
     if len(frozen_sample) != 160 or not verified.all():
         return {"decision": "blocked", "unresolved_audit_rows": int((~verified).sum())}
-    sizes = metrics["size_tercile_lower_bound"]
+    sizes = {int(key): value for key, value in metrics["size_tercile_lower_bound"].items()}
+    years = {int(key): value for key, value in metrics["year"].items()}
     floors = {
         "overall": metrics["overall"] >= 0.80,
-        "every_year": set(metrics["year"]) == set(range(2016, 2025))
-        and all(rate >= 0.70 for rate in metrics["year"].values()),
+        "every_year": set(years) == set(range(2016, 2025))
+        and all(rate >= 0.70 for rate in years.values()),
         "every_size_tercile": set(sizes) == {1, 2, 3}
         and all(rate >= 0.60 for rate in sizes.values()),
         "delisting": metrics["delisting"]["denominator"] > 0

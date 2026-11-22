@@ -5,7 +5,8 @@ import pytest
 
 from TrainingData.pit.fundamentals_pipeline import (
     load_ccm_links, load_crsp_daily, load_crsp_delistings, load_crsp_names,
-    digest, load_snapshot, market_inputs, reconcile_vintages, validate_contexts,
+    compact_snapshot_batches, digest, load_snapshot, market_inputs, reconcile_vintages,
+    validate_contexts,
 )
 from TrainingData.pit.fundamentals_features import build_features
 
@@ -108,6 +109,21 @@ def test_snapshot_quarantines_competing_point_date_rows(tmp_path):
     assert load_snapshot([path], quarantined=quarantine).vintage.tolist() == [pd.Timestamp("2024-07-31")]
     assert len(quarantine) == 1
     assert quarantine[0]["reason"] == "competing_wrds_point_date"
+
+
+def test_snapshot_compaction_keeps_first_verified_date_and_rejects_overlap(tmp_path):
+    path = tmp_path / "snapshot.csv"
+    path.write_text(
+        "gvkey,period,vintage,fiscal_year_end,atq,ceqq,niq,consol,indfmt,datafmt,currency\n"
+        "012181,2024-06-30,2024-07-30,12,1,2,3,C,INDL,STD,USD\n"
+        "012181,2024-06-30,2024-07-31,12,1,2,3,C,INDL,STD,USD\n"
+        "012181,2024-06-30,2024-08-01,12,1,2,4,C,INDL,STD,USD\n"
+    )
+    assert compact_snapshot_batches([path], []).vintage.tolist() == list(
+        pd.to_datetime(["2024-07-30", "2024-08-01"])
+    )
+    with pytest.raises(ValueError, match="Overlapping production"):
+        compact_snapshot_batches([path, path], [])
 
 
 def test_ccm_uses_dated_cik_and_preserves_gaps(tmp_path):
