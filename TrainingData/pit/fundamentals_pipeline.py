@@ -24,33 +24,43 @@ WRDS_COLUMNS = {
     "Level of Consolidation": "consol", "Industry Format": "indfmt",
     "Data Format": "datafmt", "Currency Code - Interim Issue": "currency",
 }
-WRDS_CSV_ALIASES = {"datadate": "period", "pitdate": "vintage", "pitdate1": "vintage",
+WRDS_CSV_ALIASES = {"datadate": "period", "pointdate": "vintage", "pitdate": "vintage", "pitdate1": "vintage",
                     "fyr": "fiscal_year_end", "curcdq": "currency"}
+CRSP_DAILY_COLUMNS = {
+    "PERMNO": "permno", "PERMCO": "permco", "Daily Calendar Date": "session",
+    "Security Information Start Date": "start", "Security Information End Date": "stop",
+    "Security Type": "securitytype", "Security Sub-Type": "securitysubtype",
+    "Daily Price": "price", "Daily Price Flag": "price_flag", "Shares Outstanding": "shrout",
+}
 
 
 def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def load_snapshot(paths):
+def _read_wrds(path, columns, aliases=None):
+    if path.name.lower().endswith((".csv", ".csv.gz")):
+        frame = pd.read_csv(path, dtype=str).rename(columns=columns)
+        if aliases is not None:
+            frame.columns = frame.columns.str.lower()
+            frame = frame.rename(columns=aliases)
+        return frame
+    tables = []
+    for table in html.parse(str(path)).xpath("//table"):
+        rows = [[cell.text_content().strip() for cell in row.xpath("./th|./td")]
+                for row in table.xpath(".//tr")]
+        for index, cells in enumerate(rows):
+            if set(columns).issubset(cells):
+                tables.append(pd.DataFrame(rows[index + 1:], columns=cells))
+                break
+    if len(tables) != 1:
+        raise ValueError(f"Expected one WRDS export table in {path.name}")
+    return tables[0].rename(columns=columns)
+
+
+def load_snapshot(paths, *, quarantined=None):
     """Read daily browser snapshots with their query point dates intact."""
-    frames = []
-    for path in paths:
-        if path.suffix.lower() == ".csv":
-            frame = pd.read_csv(path, dtype=str).rename(columns=WRDS_CSV_ALIASES)
-        else:
-            tables = []
-            for table in html.parse(str(path)).xpath("//table"):
-                rows = [[cell.text_content().strip() for cell in row.xpath("./th|./td")]
-                        for row in table.xpath(".//tr")]
-                for index, cells in enumerate(rows):
-                    if set(WRDS_COLUMNS).issubset(cells):
-                        tables.append(pd.DataFrame(rows[index + 1:], columns=cells))
-                        break
-            if len(tables) != 1:
-                raise ValueError(f"Expected one WRDS snapshot table in {path.name}")
-            frame = tables[0]
-        frames.append(frame.rename(columns=WRDS_COLUMNS))
+    frames = [_read_wrds(path, WRDS_COLUMNS, WRDS_CSV_ALIASES) for path in paths]
     data = pd.concat(frames, ignore_index=True)
     data = data[list(WRDS_COLUMNS.values()) + (["niy"] if "niy" in data else [])].copy()
     data["gvkey"] = data.gvkey.astype(str).str.zfill(6)
@@ -62,13 +72,41 @@ def load_snapshot(paths):
         raise ValueError("Confirmation date in WRDS export")
     valid = data.consol.eq("C") & data.indfmt.eq("INDL") & data.datafmt.eq("STD") & data.currency.eq("USD")
     data = data.loc[valid].drop_duplicates()
-    if data.duplicated(["gvkey", "period", "vintage"]).any():
-        raise ValueError("Competing WRDS rows for the same issuer, period and point date")
+    key = ["gvkey", "period", "vintage"]
+    competing = data.duplicated(key, keep=False)
+    if competing.any():
+        conflicts = data.loc[competing, key].drop_duplicates().assign(reason="competing_wrds_point_date")
+        if quarantined is None:
+            raise ValueError("Competing WRDS rows for the same issuer, period and point date")
+        quarantined.extend(conflicts.to_dict("records"))
+        data = data.loc[~competing].copy()
     for field in ("atq", "ceqq", "niq"):
-        data[field] = pd.to_numeric(data[field], errors="raise")
+        data[field] = pd.to_numeric(data[field].replace({".": np.nan, "": np.nan}), errors="raise")
     if "niy" in data:
-        data["niy"] = pd.to_numeric(data.niy, errors="raise")
+        data["niy"] = pd.to_numeric(data.niy.replace({".": np.nan, "": np.nan}), errors="raise")
     return data
+
+
+def load_crsp_daily(paths, prior_sessions):
+    """Normalize quote evidence. Expected classes must come from a separate names export."""
+    aliases = {"dlycaldt": "session", "secinfostartdt": "start", "secinfoenddt": "stop",
+               "dlyprc": "price", "dlyprcflg": "price_flag"}
+    frames = [_read_wrds(path, CRSP_DAILY_COLUMNS, aliases) for path in paths]
+    data = pd.concat(frames, ignore_index=True)[list(CRSP_DAILY_COLUMNS.values())]
+    data["session"] = pd.to_datetime(data.session, errors="raise")
+    if data.session.isna().any() or data.session.gt(END).any():
+        raise ValueError("Invalid development date in CRSP daily export")
+    data = data.loc[data.session.isin(prior_sessions)
+                    & data.securitytype.eq("EQTY") & data.securitysubtype.eq("COM")].copy()
+    data["price"] = pd.to_numeric(data.price.replace({".": np.nan, "": np.nan}), errors="raise")
+    data["shrout"] = pd.to_numeric(data.shrout.replace({".": np.nan, "": np.nan}), errors="raise")
+    data["price"] = data.price.where(data.price_flag.eq("TR") & data.price.gt(0))
+    for field in ("permno", "permco"):
+        data[field] = pd.to_numeric(data[field], errors="raise").astype("int64")
+    quotes = data[["session", "permno", "permco", "price", "shrout"]].drop_duplicates()
+    if quotes.duplicated(["session", "permno", "permco"]).any():
+        raise ValueError("Competing CRSP prices or share counts for one class")
+    return quotes
 
 
 def market_inputs(roster, listing, quotes, delistings):
@@ -296,17 +334,30 @@ def main():
     if digest(roster_file) != ROSTER_SHA256:
         raise ValueError("Frozen roster hash mismatch")
     roster = pd.read_csv(roster_file, parse_dates=["signal", "prior_session"])
-    snapshots = sorted((*base.glob("snapshot_*.htm"), *base.glob("snapshot_*.html"), *base.glob("snapshot_*.csv")))
+    snapshots = sorted((*base.glob("snapshot_*.htm"), *base.glob("snapshot_*.html"),
+                        *base.glob("snapshot_*.csv"), *base.glob("snapshot_*.csv.gz")))
     if not snapshots:
         raise ValueError("Missing WRDS browser snapshot exports")
-    vendor = load_snapshot(snapshots)
+    snapshot_conflicts = []
+    vendor = load_snapshot(snapshots, quarantined=snapshot_conflicts)
     contexts_file = base / "verified_filing_contexts.parquet"
     contexts = pd.read_parquet(contexts_file)
     if contexts.accepted_at.gt(CALENDAR.session_close(END)).any() or contexts.period.gt(END).any():
         raise ValueError("Confirmation filing in context receipts")
     edgar_sources = validate_contexts(contexts, base / "edgar_metadata", base / "edgar_facts")
-    paths = {name: base / f"{name}.parquet" for name in ("links", "listing", "quotes", "delistings")}
+    paths = {name: base / f"{name}.parquet" for name in ("links", "listing", "delistings")}
+    quote_path = base / "quotes.parquet"
+    if quote_path.exists():
+        paths["quotes"] = quote_path
+    quote_exports = []
+    if "quotes" not in paths:
+        quote_exports = sorted((*base.glob("crsp_daily_*.htm"), *base.glob("crsp_daily_*.html"),
+                                *base.glob("crsp_daily_*.csv"), *base.glob("crsp_daily_*.csv.gz")))
+        if not quote_exports:
+            raise ValueError("Missing CRSP prior-session quote exports")
     data = {name: pd.read_parquet(path) for name, path in paths.items()}
+    if quote_exports:
+        data["quotes"] = load_crsp_daily(quote_exports, roster.prior_session)
     for field in ("start", "stop", "signal"):
         data["links"][field] = pd.to_datetime(data["links"][field], errors="raise")
         if data["links"][field].isna().any() or data["links"][field].gt(END).any():
@@ -319,10 +370,11 @@ def main():
     linked = admit_links(roster, data["links"], anchors)
     ready = market_inputs(linked, data["listing"], data["quotes"], data["delistings"])
     args.output.mkdir(parents=True, exist_ok=False)
-    tables = {"vintages": vintages, "quarantined": rejected, "panel_inputs": ready}
+    tables = {"vintages": vintages, "quarantined": rejected, "panel_inputs": ready,
+              "snapshot_conflicts": pd.DataFrame(snapshot_conflicts)}
     for name, table in tables.items():
         table.to_parquet(args.output / f"{name}.parquet", index=False)
-    files = [roster_file, contexts_file, *snapshots, *paths.values(), *edgar_sources]
+    files = [roster_file, contexts_file, *snapshots, *paths.values(), *quote_exports, *edgar_sources]
     manifest = {"code_sha256": code_fingerprint(),
                 "inputs": {path.relative_to(base).as_posix(): digest(path) for path in files},
                 "outputs": {path.name: digest(path) for path in args.output.glob("*.parquet")}}

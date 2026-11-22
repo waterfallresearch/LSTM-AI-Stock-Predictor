@@ -2,7 +2,7 @@ import pandas as pd
 import pytest
 
 from TrainingData.pit.fundamentals_pipeline import (
-    load_snapshot, market_inputs, reconcile_vintages,
+    load_crsp_daily, load_snapshot, market_inputs, reconcile_vintages,
 )
 from TrainingData.pit.fundamentals_features import build_features
 
@@ -66,3 +66,42 @@ def test_snapshot_rejects_protected_point_dates(tmp_path):
     )
     with pytest.raises(ValueError, match="Confirmation date"):
         load_snapshot([path])
+
+
+def test_wrds_missing_amount_is_not_zero(tmp_path):
+    path = tmp_path / "snapshot.csv"
+    path.write_text(
+        "gvkey,period,vintage,fiscal_year_end,atq,ceqq,niq,consol,indfmt,datafmt,currency\n"
+        "012181,2024-06-30,2024-07-30,12,1,.,0,C,INDL,STD,USD\n"
+    )
+    row = load_snapshot([path]).iloc[0]
+    assert pd.isna(row.ceqq)
+    assert row.niq == 0
+
+
+def test_crsp_export_keeps_unpriced_common_class_as_missing(tmp_path):
+    path = tmp_path / "crsp_daily.csv.gz"
+    pd.DataFrame([
+        (1, 7, "2016-01-28", "2010-01-01", "2016-01-31", "EQTY", "COM", 94.09, "TR", 5544583),
+        (2, 7, "2016-01-28", "2010-01-01", "2016-01-31", "EQTY", "COM", 23.0, "XX", 200),
+    ], columns=["PERMNO", "PERMCO", "DlyCalDt", "SecInfoStartDt", "SecInfoEndDt",
+                "SecurityType", "SecuritySubType", "DlyPrc", "DlyPrcFlg", "ShrOut"]).to_csv(path, index=False)
+    result = load_crsp_daily([path], pd.to_datetime(["2016-01-28"]))
+    assert result.permno.tolist() == [1, 2]
+    assert result.price.iloc[0] == 94.09
+    assert pd.isna(result.price.iloc[1])
+    assert result.shrout.iloc[0] == 5544583
+
+
+def test_snapshot_quarantines_competing_point_date_rows(tmp_path):
+    path = tmp_path / "snapshot.csv.gz"
+    pd.DataFrame([
+        ("012181", "2024-06-30", "2024-07-30", 12, 100, 50, 10, "C", "INDL", "STD", "USD"),
+        ("012181", "2024-06-30", "2024-07-30", 12, 100, 50, 20, "C", "INDL", "STD", "USD"),
+        ("012181", "2024-06-30", "2024-07-31", 12, 100, 50, 10, "C", "INDL", "STD", "USD"),
+    ], columns=["GVKEY", "datadate", "pointdate", "fyr", "ATQ", "CEQQ", "NIQ",
+                "CONSOL", "INDFMT", "DATAFMT", "CURCDQ"]).to_csv(path, index=False)
+    quarantine = []
+    assert load_snapshot([path], quarantined=quarantine).vintage.tolist() == [pd.Timestamp("2024-07-31")]
+    assert len(quarantine) == 1
+    assert quarantine[0]["reason"] == "competing_wrds_point_date"

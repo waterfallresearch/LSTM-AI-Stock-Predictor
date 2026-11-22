@@ -25,4 +25,20 @@ The reference export is local and Git-ignored. Its SHA-256 is `13437c16baa1530b0
 
 A live reference reconciliation joined the WRDS export to cutoff-filtered SEC evidence. Original net income first became usable July 31, 2024, and the amendment first became usable November 29. The unmatched intermediate value produced no verified replacement. Book equity was left missing in this live check because the preferred-stock context was outside the reference audit.
 
+## Bulk-export checkpoint, 2026-11-22
+
+The WRDS form accepts up to 4,096 characters in its company-code field. The 674 GVKEY candidate set was split into two 337-code batches. Gzipped CSV exports can be saved directly through the browser download action. Validate the actual point-date range in each downloaded file because one browser request returned only February from an intended longer date range.
+
+| WRDS query | Verified local result |
+|---|---|
+| 11939651 | 6,480 usable source rows across 24 GVKEYs, January–March 2015 |
+| 11939657 | 31,310 usable source rows across 337 GVKEYs, January 2014 |
+| 11939659 | 27,125 usable source rows across 294 GVKEYs, January 2014 |
+| 11939663 | 28,280 usable source rows across 337 GVKEYs, February 2014 |
+| 11939665 | 294,178 usable source rows across 300 GVKEYs, February–December 2014. There are 132 quarantined point-date keys with competing update records. |
+| 11939666 | Submitted the complementary 337-code batch for March–December 2014. Pending verification. |
+| 11939656 | CRSP Apple reference export, with an unadjusted traded price and shares on January 28, 2016. Parsing preserved CRSP's thousand-share units for the downstream conversion. |
+
+Files are local under `TrainingData/indicators_data/wrds/fundamentals_gate`. The parser supports WRDS gzip CSV output, preserves missing amount markers, and keeps a separate conflict ledger during preflight. CRSP daily exports can supply quotes directly while a separate names export is still required to establish the expected class roster. This is collection and parser evidence. The production coverage gate remains unrun. Twenty-one focused tests passed.
+
 Claude withheld full audit clearance and flagged multiple point dates per filing, reconciling receipts against EDGAR, incomplete rejection reasons, non-month-end fiscal dates, and bias in the size denominators when issuer cap is missing. The integration now uses accession-aware point-date selection, validates receipts against cached SEC facts, and records several previously silent rejection reasons. Exact fiscal-period matching remains frozen. Missing issuer size still needs independent size evidence or a reviewed subgroup treatment before a gate pass can be claimed. Eighteen focused tests passed.
