@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -45,6 +46,88 @@ def statement_evidence(archive, accessions):
                              usecols=["adsh", "tag", "version", "stmt", "plabel"])
         labels = labels.loc[labels.adsh.isin(keys) & labels.tag.isin(TAGS)]
     return submissions, numbers, labels
+
+
+def observed_fact(document, tag, period, *, duration=None, unit="USD"):
+    """Select an unambiguous independent XBRL fact with stated rounding."""
+    facts = set()
+    for fact in document.get("facts", []):
+        if fact["tag"] != tag or fact["end"] != period or not fact["ns"].startswith("http://fasb.org/us-gaap/"):
+            continue
+        if str(fact.get("unit", "")).split(":")[-1] != unit:
+            continue
+        start = fact.get("start")
+        if duration is None and start is not None:
+            continue
+        if duration is not None and (not start or not duration[0] <= (
+            pd.Timestamp(period) - pd.Timestamp(start)
+        ).days <= duration[1]):
+            continue
+        try:
+            amount = Decimal(fact["value"])
+            decimals = fact.get("decimals")
+            rounding = Decimal(0) if decimals == "INF" else Decimal("0.5").scaleb(-int(decimals))
+        except (InvalidOperation, TypeError, ValueError):
+            continue
+        if amount.is_finite():
+            facts.add((amount, rounding, start))
+    # Some filings repeat the same fact at different display precision.
+    values = {(value, start) for value, _, start in facts}
+    if len(values) != 1:
+        return None
+    value, start = next(iter(values))
+    return value, min(tolerance for _, tolerance, _ in facts), start
+
+
+def check_vintage_numbers(vintage, instances):
+    """Independently reconcile accepted assets, quarterly income and book equity."""
+    accession = vintage.accession
+    document = instances.get(accession, {})
+    period = vintage.period.date().isoformat()
+    failures = []
+    if not document.get("instance_sha256"):
+        return ["missing_original_xbrl_instance"]
+
+    def equals(fact, observed):
+        return fact is not None and abs(fact[0] - Decimal(str(observed))) <= fact[1]
+
+    for tag, wanted in (("Assets", vintage.assets),):
+        if not equals(observed_fact(document, tag, period), wanted):
+            failures.append("assets")
+    stockholder = observed_fact(document, "StockholdersEquity", period)
+    preferred = observed_fact(document, "PreferredStockCarryingValue", period)
+    if preferred is None:
+        shares = observed_fact(document, "PreferredStockSharesOutstanding", period, unit="shares")
+        issued = observed_fact(document, "PreferredStockSharesIssued", period, unit="shares")
+        reported = observed_fact(document, "PreferredStockValue", period)
+        redemption = [observed_fact(document, tag, period) for tag in (
+            "PreferredStockRedemptionValue", "PreferredStockRedemptionAmount",
+            "PreferredStockLiquidationPreferenceValue",
+        )]
+        if shares and shares[0] == 0 and (issued is None or issued[0] == 0) and (
+            reported is None or reported[0] == 0
+        ) and all(value is None or value[0] == 0 for value in redemption):
+            preferred = (Decimal(0), Decimal(0), None)
+    equity = (stockholder[0] - preferred[0], stockholder[1] + preferred[1], None) if stockholder and preferred else None
+    if not equals(equity, vintage.book_equity):
+        failures.append("parent_common_equity")
+    lineage = tuple(vintage.net_income_accessions)
+    if len(lineage) == 2 and lineage[0] == accession:
+        annual = observed_fact(document, "NetIncomeLoss", period, duration=(350, 380))
+        interim_doc = instances.get(lineage[1], {})
+        interim_period = interim_doc.get("report_period")
+        interim = observed_fact(interim_doc, "NetIncomeLoss", interim_period,
+                                duration=(255, 285)) if interim_period else None
+        income = (annual[0] - interim[0], annual[1] + interim[1], annual[2]) if (
+            annual and interim and annual[2] == interim[2]
+        ) else None
+    else:
+        income = observed_fact(document, "NetIncomeLoss", period, duration=(80, 100)) if (
+            lineage == (accession,)
+        ) else None
+    if not equals(income, vintage.net_income):
+        failures.append("quarterly_net_income")
+    return failures
 
 
 def main():

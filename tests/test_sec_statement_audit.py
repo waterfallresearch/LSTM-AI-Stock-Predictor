@@ -1,8 +1,9 @@
 from zipfile import ZipFile
+from types import SimpleNamespace
 
 import pandas as pd
 
-from TrainingData.pit.sec_statement_audit import statement_evidence
+from TrainingData.pit.sec_statement_audit import check_vintage_numbers, statement_evidence
 
 
 def test_sec_extract_filters_segmentation_and_confirmation(tmp_path):
@@ -22,3 +23,27 @@ def test_sec_extract_filters_segmentation_and_confirmation(tmp_path):
     assert subs.accepted_et.iloc[0].tz_convert("UTC") == pd.Timestamp("2022-07-26T20:32:00Z")
     assert facts.value.tolist() == ["100"]
     assert labels.plabel.tolist() == ["Total assets"]
+
+
+def test_original_xml_audit_checks_q4_and_preferred_zero():
+    ns = "http://fasb.org/us-gaap/2024"
+
+    def fact(tag, end, value, start=None, unit="USD"):
+        return {"tag": tag, "end": end, "value": str(value), "start": start,
+                "unit": unit, "ns": ns, "decimals": "INF"}
+
+    end = "2023-12-31"
+    annual = {"instance_sha256": "annual", "facts": [
+        fact("Assets", end, 100),
+        fact("StockholdersEquity", end, 60),
+        fact("PreferredStockSharesOutstanding", end, 0, unit="shares"),
+        fact("NetIncomeLoss", end, 20, "2023-01-01"),
+    ]}
+    interim = {"instance_sha256": "q3", "report_period": "2023-09-30", "facts": [
+        fact("NetIncomeLoss", "2023-09-30", 13, "2023-01-01")
+    ]}
+    vintage = SimpleNamespace(accession="annual", period=pd.Timestamp(end), assets=100,
+                              book_equity=60, net_income=7, net_income_accessions=("annual", "q3"))
+    assert check_vintage_numbers(vintage, {"annual": annual, "q3": interim}) == []
+    annual["facts"].append(fact("PreferredStockRedemptionAmount", end, 5))
+    assert check_vintage_numbers(vintage, {"annual": annual, "q3": interim}) == ["parent_common_equity"]
