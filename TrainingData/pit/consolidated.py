@@ -42,16 +42,84 @@ def load_raw() -> tuple[pd.DataFrame, list]:
             frames.append(pd.DataFrame({"session": b.index.astype(str).str[:10], "ric": back[cons], "cons_ric": cons,
                                         "volume_consolidated": b.get("ACVOL_UNS"), "close_consolidated": b.get("TRDPRC_1"),
                                         "bid": b.get("BID"), "ask": b.get("ASK")}))
-    return pd.concat(frames, ignore_index=True), files
+    main = pd.concat(frames, ignore_index=True)
+    # Fallback run (lseg_consolidated.py --fallback): alternative consolidated RICs (e.g. XYZ.K) for primary RICs
+    # whose standard consolidated RIC returned nothing. Replaces any main-run rows for those primary RICs.
+    fb_runs = sorted((LSEG_ROOT / "consolidated_fallback").glob("*"))
+    if fb_runs:
+        fb = fb_runs[-1]
+        fman = json.loads((fb / "manifest.json").read_text())
+        fb_frames = []
+        for ric, rec in sorted(fman["rics"].items()):
+            if rec.get("status") != "ok":
+                continue
+            f = fb / rec["file"]
+            files.append(f)
+            b = pd.read_csv(f, index_col=0).apply(pd.to_numeric, errors="coerce").dropna(how="all")
+            fb_frames.append(pd.DataFrame({"session": b.index.astype(str).str[:10], "ric": ric, "cons_ric": rec["cons_ric"],
+                                           "volume_consolidated": b.get("ACVOL_UNS"), "close_consolidated": b.get("TRDPRC_1"),
+                                           "bid": b.get("BID"), "ask": b.get("ASK")}))
+        if fb_frames:
+            fbd = pd.concat(fb_frames, ignore_index=True)
+            main = pd.concat([main[~main.ric.isin(set(fbd.ric))], fbd], ignore_index=True)
+    return main, files
+
+
+RATIO_WINDOW = 63  # sessions; trailing median of the daily cross-sectional consolidated/venue ratio
+
+
+def venue_code(ric: pd.Series) -> pd.Series:
+    return ric.str.split("^").str[0].str.rsplit(".", n=1).str[-1]
+
+
+def add_volume_fallback(m: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
+    """volume_adv: consolidated volume where it exists, else venue volume x the trailing (<= t) median
+    consolidated/venue ratio of OTHER securities on the same listing venue. volume_source says which.
+
+    Used for securities whose consolidated RIC LSEG cannot serve (mostly bankrupt or failed names, which must not be
+    dropped: dropping them re-introduces survivorship bias). Accuracy is measured out of sample on securities that do
+    have consolidated volume: the scaled estimate is compared with the true consolidated value, per session.
+    """
+    m = m.copy()
+    m["venue"] = venue_code(m.ric)
+    both = m[(m.volume_consolidated > 0) & (m.volume_venue > 0) & m.valid_bar]
+    daily = (both.volume_consolidated / both.volume_venue).groupby([both.venue, both.session]).median()
+    ratio = (daily.groupby(level=0, group_keys=False)
+             .apply(lambda s: s.sort_index(level=1).rolling(RATIO_WINDOW, min_periods=10).median())
+             .rename("venue_ratio").reset_index())
+    m = m.merge(ratio, on=["venue", "session"], how="left")
+    has = m.volume_consolidated > 0
+    scaled = m.volume_venue * m.venue_ratio
+    m["volume_adv"] = np.where(has, m.volume_consolidated, np.where(scaled > 0, scaled, np.nan))
+    m["volume_source"] = np.where(has, "consolidated", np.where(scaled > 0, "venue_scaled", "none"))
+    # out-of-sample accuracy of the scaling on sessions where the truth is known
+    chk = m[has & (scaled > 0) & m.member & m.valid_bar]
+    err = np.log(scaled[chk.index] / chk.volume_consolidated)
+    # same check on 21-session ADV (what the cost model uses)
+    t = chk.sort_values(["isin", "session"])
+    adv_true = t.groupby("isin").volume_consolidated.transform(lambda s: s.rolling(21, min_periods=10).mean())
+    adv_est = (t.volume_venue * t.venue_ratio).groupby(t["isin"]).transform(lambda s: s.rolling(21, min_periods=10).mean())
+    e21 = np.log(adv_est / adv_true).dropna()
+    audit = {"ratio_window_sessions": RATIO_WINDOW,
+             "venue_ratio_median_by_venue": {k: round(float(v), 3) for k, v in daily.groupby(level=0).median().items()},
+             "daily_abs_log_error_median": round(float(err.abs().median()), 4),
+             "adv21_abs_log_error_median": round(float(e21.abs().median()), 4),
+             "adv21_within_25pct": round(float((e21.abs() <= np.log(1.25)).mean()), 4),
+             "adv21_within_50pct": round(float((e21.abs() <= np.log(1.5)).mean()), 4)}
+    return m.drop(columns=["venue", "venue_ratio"]), audit
 
 
 def main() -> None:
     raw, files = load_raw()
-    px = pd.read_parquet(OUTPUT / "prices_pit.parquet", columns=["session", "isin", "ric", "close", "valid_bar", "member"])
+    px = pd.read_parquet(OUTPUT / "prices_pit.parquet",
+                         columns=["session", "isin", "ric", "close", "volume_venue", "valid_bar", "member"])
     m = px.merge(raw, on=["ric", "session"], how="left")
     mid = (m.bid + m.ask) / 2
     m["quoted_spread"] = np.where((m.bid > 0) & (m.ask >= m.bid), (m.ask - m.bid) / mid, np.nan)
-    out = m[["session", "isin", "ric", "cons_ric", "volume_consolidated", "close_consolidated", "bid", "ask", "quoted_spread"]]
+    m, fb_audit = add_volume_fallback(m)
+    m["quote_source"] = np.where(np.isfinite(m.quoted_spread), "consolidated", "none")
+    out = m[["session", "isin", "ric", "cons_ric", "volume_consolidated", "close_consolidated", "bid", "ask", "quoted_spread",
+             "volume_adv", "volume_source", "quote_source"]]
     out_path = OUTPUT / "consolidated_pit.parquet"
     out.to_parquet(out_path, index=False)
 
@@ -89,6 +157,12 @@ def main() -> None:
     audit = {
         "member_sessions": int(len(mem)), "consolidated_volume_coverage": round(cov_vol, 5),
         "quoted_spread_coverage": round(cov_q, 5), "consolidated_close_matches_primary_close": round(close_match, 5),
+        "volume_fallback": {**fb_audit,
+                            "member_session_share_by_source": mem.volume_source.value_counts(normalize=True).round(5).to_dict(),
+                            "securities_venue_scaled_only": sorted(mem.groupby("isin").volume_source.agg(
+                                lambda s: (s != "consolidated").all()).loc[lambda s: s].index.tolist()),
+                            "quote_note": "No quotes for venue_scaled securities: the cost model falls back to the "
+                                          "daily-bar estimator, which overstates S&P 500 spreads ~10x (conservative)."},
         "P2_retest": {"securities_compared": int(len(per)), "share_passing_95pct_within_10pct": round(p2_share, 4),
                       "median_ratio_p10_p50_p90": per.median_ratio.quantile([.1, .5, .9]).round(4).tolist() if len(per) else [],
                       "pass": bool(p2_share >= 0.95), "worst": per.nsmallest(8, "within_10pct").round(4).to_dict("records")},

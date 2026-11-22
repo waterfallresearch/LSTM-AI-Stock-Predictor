@@ -34,6 +34,8 @@ SCHEMAS: dict[str, dict] = {
                                  "key": ["ric", "completion_date"], "dates": ["completion_date"]},
     "membership_probe_assertions": {"cols": ["date", "ric", "expected_member", "min_rows", "reason", "source"],
                                     "key": ["date", "ric"], "dates": ["date"]},
+    "roster_link_confirmations": {"cols": ["ivv_line", "replay_isin", "cik", "evidence", "source", "confirmed_on"],
+                                  "key": ["replay_isin"], "dates": ["confirmed_on"]},
 }
 
 

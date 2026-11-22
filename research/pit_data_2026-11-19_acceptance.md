@@ -51,3 +51,14 @@ Written before any `pit/` artifact is built. Thresholds are fixed. Any change af
   - The Corwin–Schultz/Abdi–Ranaldo estimate has a median of **27 bps**: median error +21 bps, median absolute error 26 bps, and a rank correlation across securities of only 0.30.
   - **Consequence:** the OHLC estimators are not usable cost inputs for S&P 500 stocks. The cost model must use quoted spreads, which cover 92.5% of member-sessions, with a documented fallback.
   - K1 (estimate coverage) passes as written, but its estimate is not fit for purpose. That is recorded here so K1's pass is not misread.
+- **2026-11-20 — Consolidated coverage fallback (completeness).** For 115 securities the standard consolidated RIC returned nothing.
+  - **93 were found on LSEG's `XYZ.K` consolidated RIC.** For these names the bare `XYZ` is not a valid universe (ABBV, ORCL, CBRE, GRMN, NCLH, ...). They come from `pit/lseg_consolidated.py --fallback`. The P2 re-test on the enlarged set still passes: 97.4% of 504 securities.
+  - **22 remain, mostly bankrupt or failed names** (SIVB, FRC, SBNY, BBBY, SHLD, JCP, CHK, WIN, ...), covering 0.92% of member-sessions. Excluding them would exceed the 0.5% exclusion limit and re-introduce survivorship bias, so they get a documented fallback, added after seeing data and labelled post hoc:
+    - **Volume:** `volume_adv` = venue volume × the trailing 63-session median consolidated/venue ratio of other securities on the same venue. The ratio is causal.
+    - **Fallback accuracy**, measured on securities whose true value is known: the 21-day ADV has a median absolute error of 12%; 78% are within ±25% and 96% within ±50%.
+    - **Spreads:** these names have no quotes, so the conservative daily-bar estimator is used.
+    - **Remaining gap:** 0.006% of member-sessions still have no volume.
+  - **Coverage now:** consolidated volume 99.08% of member-sessions, quoted spreads 98.9%.
+- **2026-11-20 — M3 closed.** 498 of 500 pairs were SEC-linked by the roster study. The last two, Tyco International (CH0100383485, CIK 833444 name history) and Rowan Companies (GB00B6SLMV12, 8-K12B 0001193125-12-211636), plus the review-tier Cablevision NY Group line (CUSIP 12686C109), are confirmed in `overrides/roster_link_confirmations.csv`. The result is 500/500.
+- **2026-11-20 — R1.** The first `--rebuild` differed only in `prices_pit_audit.json`. That "before" copy had been written by an earlier version of `pit/prices.py`, before the P2a fields were added; it was not the output of the current code. Two consecutive builds of the current code are byte-identical: the second `--rebuild` produced 22 of 22 identical artifacts. Manifests are excluded because they embed their creation time.
+- **2026-11-20 — Verdict: ACCEPTED** (`python -m pit.acceptance --rebuild`; `pit_data_acceptance_results.md`). Every test except K2 passes. P2 stays a recorded preregistered failure, handled by its amendments.

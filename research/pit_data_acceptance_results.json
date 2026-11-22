@@ -1,0 +1,173 @@
+{
+  "verdict": "ACCEPTED",
+  "failed": [],
+  "p2_handled_by_amendment": true,
+  "tests": {
+    "M1": {
+      "pass": true,
+      "checkpoints": {
+        "2015-12-31": {
+          "extra": [],
+          "missing": []
+        },
+        "2019-12-31": {
+          "extra": [],
+          "missing": []
+        },
+        "2023-12-29": {
+          "extra": [],
+          "missing": []
+        },
+        "2026-11-18": {
+          "extra": [],
+          "missing": []
+        }
+      }
+    },
+    "M2": {
+      "pass": true,
+      "probes": 18,
+      "unexplained": {},
+      "assertions_failed": []
+    },
+    "M3": {
+      "pass": true,
+      "holding_lines": 500,
+      "replay_isins": 500,
+      "linked_after_sec": 498,
+      "manual_confirmations": [
+        [
+          "Tyco International Ltd.",
+          "CH0100383485"
+        ],
+        [
+          "Rowan Companies Inc.",
+          "GB00B6SLMV12"
+        ],
+        [
+          "Cablevision NY Group Class A",
+          "US12686C1099"
+        ]
+      ],
+      "linked_final": 500,
+      "review_tier_left": 0,
+      "source": "IVV N-Q 2010-12-31 (research/spy_roster_2010_comparison.md) + overrides/roster_link_confirmations.csv"
+    },
+    "M4": {
+      "pass": true,
+      "min_members": 499,
+      "max_members": 508
+    },
+    "M5": {
+      "pass": true,
+      "rows_new": 2009436,
+      "rows_old": 2009436,
+      "extra_rows": 0,
+      "missing_rows": 0
+    },
+    "I1": {
+      "pass": true,
+      "securities": 860,
+      "aliases": [
+        [
+          "US05722G1004",
+          "BKR.N"
+        ],
+        [
+          "US1344291091",
+          "CPB.N"
+        ],
+        [
+          "US44107P1049",
+          "HST.N"
+        ],
+        [
+          "US4943681035",
+          "KMB.N"
+        ]
+      ]
+    },
+    "P1": {
+      "pass": true,
+      "coverage": 0.999932
+    },
+    "P2": {
+      "pass": false,
+      "preregistered_result": "FAIL (LSEG primary-RIC volume is venue volume)",
+      "amendment_P2a_close_match_pass": true,
+      "amendment_retest_consolidated_pass": true,
+      "retest_share": 0.9742,
+      "handling": "Volume is taken only from the consolidated series (amendment log 2026-11-20)."
+    },
+    "P3": {
+      "pass": true,
+      "missing_not_in_ledger": 0
+    },
+    "C1": {
+      "pass": true,
+      "unverified": []
+    },
+    "C2": {
+      "pass": true,
+      "unexplained": []
+    },
+    "C3": {
+      "pass": true,
+      "spy_dividends": 63
+    },
+    "S1": {
+      "pass": true,
+      "needs_manual": []
+    },
+    "S2": {
+      "pass": true,
+      "counts": {
+        "pass": 137,
+        "outside_tolerance": 8,
+        "no_successor_price": 6
+      },
+      "undocumented": []
+    },
+    "K1": {
+      "pass": true,
+      "coverage": 0.99734,
+      "note": "Estimator is not fit for purpose (K2); the cost model uses quoted spreads."
+    },
+    "K2": {
+      "reported_only": true,
+      "sessions": 1985712,
+      "quoted_21d_median_p10_p50_p90": [
+        0.0001,
+        0.00023,
+        0.00149
+      ],
+      "estimate_median": 0.00273,
+      "median_abs_error": 0.00258,
+      "median_error": 0.00214,
+      "rank_corr_by_security": 0.2589,
+      "note": "Reported, not pass/fail (preregistered)."
+    },
+    "R1": {
+      "pass": true,
+      "artifacts": 22,
+      "differing": [],
+      "builders": [
+        "identity",
+        "membership",
+        "prices",
+        "settlement",
+        "corporate_actions",
+        "spreads",
+        "consolidated"
+      ]
+    },
+    "completeness": {
+      "pass": true,
+      "securities_uncovered": [],
+      "securities_on_fallback": 22,
+      "fallback_member_session_share": 0.00915,
+      "no_volume_member_session_share": 6e-05,
+      "note": "Precondition of pit_nextopen (strict load), not a preregistered data test."
+    }
+  }
+}

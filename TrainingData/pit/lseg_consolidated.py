@@ -41,13 +41,94 @@ def consolidated_ric(ric: str) -> str:
     return new + (sep + suffix if suffix else "")
 
 
+def fallback_candidates(ric: str) -> list[str]:
+    """Alternative consolidated RICs, tried in order when consolidated_ric() returns nothing.
+
+    Verified 2026-11-20: for some NYSE names (ABBV, ORCL, CBRE, GRMN, NCLH) the bare RIC is not a valid universe
+    and the consolidated line is XYZ.K; JPM.K / AAPL.K do not exist, so .K is only a fallback.
+    """
+    base, sep, suffix = ric.partition("^")
+    name, dot, venue = base.rpartition(".")
+    if not dot:
+        name = base
+    tail = sep + suffix if suffix else ""
+    first = consolidated_ric(ric)
+    out = []
+    for c in (f"{name}.K{tail}", f"{name}{tail}", f"{name}.O{tail}"):
+        if c != first and c not in out:
+            out.append(c)
+    return out
+
+
+def missing_primary_rics(main_run: Path, sm: pd.DataFrame) -> list[str]:
+    """Primary RICs whose main-run consolidated series has no volume at all."""
+    man = json.loads((main_run / "manifest.json").read_text())
+    have = set()
+    for key, rec in man["batches"].items():
+        if rec["status"] != "ok":
+            continue
+        raw = pd.read_csv(main_run / f"{key}.csv", header=[0, 1], index_col=0)
+        for cons in rec["rics"]:
+            if cons in raw.columns.get_level_values(0):
+                v = pd.to_numeric(raw[cons].get("ACVOL_UNS"), errors="coerce")
+                if v is not None and (v > 0).any():
+                    have.add(cons)
+    return sorted(r for r in sm[sm.role.eq("primary")].ric.unique() if consolidated_ric(r) not in have)
+
+
+def run_fallback(ld, out: Path) -> None:
+    """One request per candidate RIC (a bad RIC fails the whole batch); stop at the first candidate with volume."""
+    sm = pd.read_csv(TRAINING_DATA / "indicators_data/pit/security_master.csv")
+    main_run = sorted((TRAINING_DATA / "indicators_data/lseg/consolidated").glob("*"))[-1]
+    out.mkdir(parents=True, exist_ok=True)
+    man_path = out / "manifest.json"
+    man = json.loads(man_path.read_text()) if man_path.exists() else {
+        "fields": FIELDS, "main_run": main_run.name, "rics": {}}
+    for ric in missing_primary_rics(main_run, sm):
+        if man["rics"].get(ric, {}).get("status") in ("ok", "none"):
+            continue
+        rec = {"tried": []}
+        for cand in fallback_candidates(ric):
+            rec["tried"].append(cand)
+            try:
+                df = ld.get_history(cand, fields=FIELDS, start="2011-01-01", end="2026-11-18", interval="daily",
+                                    adjustments="unadjusted")
+            except Exception:
+                continue
+            if df is None or df.empty or not (pd.to_numeric(df.get("ACVOL_UNS"), errors="coerce") > 0).any():
+                continue
+            f = out / f"{cand.replace('^', '_')}.csv"
+            df.to_csv(f, lineterminator="\n")
+            rec.update(status="ok", cons_ric=cand, file=f.name, rows=int(len(df)),
+                       sha256=hashlib.sha256(f.read_bytes()).hexdigest())
+            break
+        else:
+            rec["status"] = "none"
+        man["rics"][ric] = rec
+        man_path.write_text(json.dumps(man, indent=2))
+        print(ric, rec["status"], rec.get("cons_ric", ""), flush=True)
+    ok = sum(1 for r in man["rics"].values() if r["status"] == "ok")
+    print(json.dumps({"folder": str(out), "found": ok, "missing": len(man["rics"]) - ok}))
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--batch", type=int, default=10)
     ap.add_argument("--resume", type=Path)
+    ap.add_argument("--fallback", action="store_true",
+                    help="retry primary RICs with no consolidated data on alternative consolidated RICs")
     a = ap.parse_args()
     import lseg.data as ld
     logging.disable(logging.CRITICAL)
+    if a.fallback:
+        out = a.resume or TRAINING_DATA / "indicators_data/lseg/consolidated_fallback" / datetime.now(
+            timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        s = open_session(ld)
+        try:
+            run_fallback(ld, out)
+        finally:
+            s.close()
+        return
     sm = pd.read_csv(TRAINING_DATA / "indicators_data/pit/security_master.csv")
     rics = sorted(sm[sm.role.eq("primary")].ric.unique())
     pairs = [(r, consolidated_ric(r)) for r in rics]
