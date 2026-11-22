@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
+from TrainingData.pit.edgar_preferred import preferred_evidence
 from TrainingData.pit.fundamentals_gate import CALENDAR, END
 from TrainingData.pit.fundamentals_pipeline import digest, load_ccm_links, load_snapshot
 
@@ -60,11 +61,11 @@ def accession_receipts(submissions, facts, spans, labels, source):
         accession = filing.accessionNumber
         assets = instant_fact(facts.get("Assets", []), accession, date)
         equity = instant_fact(facts.get("StockholdersEquity", []), accession, date)
-        preferred = instant_fact(facts.get("PreferredStockCarryingValue", []), accession, date)
+        preferred, preferred_basis = preferred_evidence(facts, accession, date)
         base = dict(key, gvkey=gvkey, form=filing.form, accepted_at=acceptance, basis="US-GAAP",
                     currency="USD", consolidated=True, fiscal_year=int(fiscal_year),
                     fiscal_quarter=int(quarter), fiscal_year_end=int(year_end), assets=assets,
-                    parent_equity=equity, preferred=preferred,
+                    parent_equity=equity, preferred=preferred, preferred_basis=preferred_basis,
                     preferred_verified=preferred is not None and preferred >= 0,
                     receipt=source)
         durations = [("annual", 350, 380)] if quarter == 4 else [("quarter", 80, 100)]
@@ -109,6 +110,10 @@ def main():
         filings = pd.read_csv(submissions_path, dtype=str).drop_duplicates()
         facts = json.loads(facts_path.read_text())
         source = f"sec-submissions:{digest(submissions_path)};sec-companyfacts:{digest(facts_path)}"
+        preferred_path = base / "sec_preferred_evidence" / f"{cik}.json"
+        if preferred_path.exists():
+            facts.update(json.loads(preferred_path.read_text()))
+            source += f";sec-preferred:{digest(preferred_path)}"
         valid, rejected = accession_receipts(filings, facts, group, lookup, source)
         receipts.extend(valid)
         unresolved.extend(rejected)

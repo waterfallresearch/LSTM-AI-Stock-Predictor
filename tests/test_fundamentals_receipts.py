@@ -1,5 +1,6 @@
 import pandas as pd
 
+from TrainingData.pit.edgar_preferred import preferred_evidence
 from TrainingData.pit.fundamentals_receipts import accession_receipts
 
 
@@ -25,3 +26,14 @@ def test_receipts_use_exact_period_and_do_not_infer_preferred_absence():
     assert all(not r["preferred_verified"] for r in accepted)
     assert len(rejected) == 1
     assert rejected[0]["reason"] == "missing_or_conflicting_exact_fiscal_labels"
+
+
+def test_preferred_zero_requires_explicit_uncontradicted_shares():
+    fact = {"accn": "a", "end": "2024-09-30", "val": 0}
+    assert preferred_evidence({"PreferredStockValue": [fact]}, "a", fact["end"])[0] is None
+    evidence = {"PreferredStockSharesOutstanding": [fact]}
+    assert preferred_evidence(evidence, "a", fact["end"]) == (0, "reported_zero_preferred_shares")
+    evidence["PreferredStockRedemptionValue"] = [dict(fact, val=100)]
+    assert preferred_evidence(evidence, "a", fact["end"])[0] is None
+    evidence["PreferredStockCarryingValue"] = [dict(fact, val=50)]
+    assert preferred_evidence(evidence, "a", fact["end"]) == (50, "reported_carrying_value")

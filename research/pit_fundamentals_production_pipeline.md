@@ -58,4 +58,6 @@ The first run produced 25,145 candidate receipt rows across 20,106 accessions an
 
 Candidate Parquet SHA-256 `4cbb83d6a31d04253c7b1a81ecf7d435fdc0e0a07a3f64b6373ae93bff01d2ae`. Twenty-five focused tests passed.
 
+The preferred-stock verifier now accepts a unique carrying amount or an explicit zero outstanding-share fact without contradictory issued shares or preferred value, from the same accession and period. It still requires independently matching WRDS common equity. A separate SEC sidecar collection was started for the 680 candidate issuers. This leaves the initial Company Facts cache and its hashes intact. Twenty-six focused tests passed after adding the zero-share and contradictory-evidence checks.
+
 Claude withheld full audit clearance and flagged multiple point dates per filing, reconciling receipts against EDGAR, incomplete rejection reasons, non-month-end fiscal dates, and bias in the size denominators when issuer cap is missing. The integration now uses accession-aware point-date selection, validates receipts against cached SEC facts, and records several previously silent rejection reasons. Exact fiscal-period matching remains frozen. Missing issuer size still needs independent size evidence or a reviewed subgroup treatment before a gate pass can be claimed. Eighteen focused tests passed.

@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from lxml import html
 
+from TrainingData.pit.edgar_preferred import preferred_evidence
 from TrainingData.pit.fundamentals_anchors import admit_links
 from TrainingData.pit.fundamentals_features import (
     aggregate_market_cap, build_features, coverage, fourth_quarter, reconcile_facts,
@@ -223,6 +224,10 @@ def validate_contexts(contexts, metadata_dir, facts_dir):
         sources.extend([metadata, facts_file])
         submissions = pd.read_csv(metadata, dtype=str)
         facts = json.loads(facts_file.read_text())
+        preferred_file = facts_dir.parent / "sec_preferred_evidence" / f"{cik}.json"
+        if preferred_file.exists():
+            sources.append(preferred_file)
+            facts.update(json.loads(preferred_file.read_text()))
         for row in rows.itertuples(index=False):
             if not isinstance(row.accession, str):
                 raise ValueError("Missing accession")
@@ -242,6 +247,10 @@ def validate_contexts(contexts, metadata_dir, facts_dir):
             ):
                 if pd.notna(declared) and tagged != declared:
                     raise ValueError(f"Filing receipt disagrees with SEC facts for {row.accession}")
+            if row.preferred_verified is True:
+                adjustment, basis = preferred_evidence(facts, row.accession, period)
+                if adjustment is None or adjustment != row.preferred or basis != getattr(row, "preferred_basis", None):
+                    raise ValueError(f"Unsupported preferred-stock adjustment for {row.accession}")
     return sources
 
 
@@ -498,7 +507,7 @@ def code_fingerprint():
     return {
         name: digest(directory / name)
         for name in ("fundamentals_pipeline.py", "fundamentals_features.py",
-                     "fundamentals_gate.py", "fundamentals_anchors.py")
+                     "fundamentals_gate.py", "fundamentals_anchors.py", "edgar_preferred.py")
     }
 
 
