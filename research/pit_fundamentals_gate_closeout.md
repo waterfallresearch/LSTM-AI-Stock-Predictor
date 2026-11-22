@@ -19,7 +19,9 @@ An independent implementation reproduced each feature availability flag for ever
 
 The frozen filing sample contains 120 accepted and 40 quarantined cases. The automated run cleared 119 accepted and corroborated 29 quarantined cases. Supplemental public filing checks explain the remaining flags, and Claude reviewed them as documented explanations. The original audit receipts retain their flags. The discrepancies include a conflicting fiscal-year label, two nonfinancial amendments, five annual amendments outside the frozen Q4 rule, three missing verified nine-month contexts, and one issuer using a different parent-income tag. These counts describe the stratified sample.
 
-Replaying the audit finalizer from the exact frozen source blob in commit `2ddb315` returned `blocked` with 12 unresolved audit rows. That is the filing-clearance status. The coverage threshold failure independently closes this specification. The audited SEC evidence replay is in commit `d1a1937`. It requires a reviewed file manifest and rederives the supplemental amendment form from the original hashed SEC index bytes.
+Replaying the audit finalizer from the exact frozen source blob in commit `2ddb315` returned `blocked` with 12 unresolved audit rows. Claude explicitly signed off on that negative filing-clearance disposition and on the separate coverage failure. Codex reverified all 2,061 input and four preflight output hashes. Claude reviewed the reported evidence and decision logic without local file access. Supplemental adjudications are advisory and confer no clearance. The audited SEC evidence replay in commit `d1a1937` requires a reviewed file manifest and rederives the supplemental amendment form from the original hashed SEC index bytes.
+
+This is a failed data-pipeline specification. The coverage result closes it to predictive promotion. No strategy trial or return evaluation occurred. A future specification would require new preregistration and a fresh filing acceptance sample. The existing sample and its supplemental adjudications remain available as development evidence.
 
 | Verified artifact | SHA-256 |
 |---|---|
@@ -31,6 +33,7 @@ Replaying the audit finalizer from the exact frozen source blob in commit `2ddb3
 | Supplemental evidence manifest | `aa3e872942818c7e013109a75955c2b711a9588742fae1e66d6e0f31edc7846b` |
 | Supplemental case adjudications | `310158afe70929bb72adfe412b3d14fed2eb5739a8923dd6cf610ce84d7b3c65` |
 | Combined machine receipts | `468272b1c0bcda893305b9cdc10f56ce9e4acb4736c360ad1f2d2f53646fc91c` |
+| Frozen-machine filing disposition | `d4440ffe4be4d6d25899b6907037aa680908bab687a1796dea7cd86675896520` |
 | Independent CRSP cap audit | `5ce63c622394921e4aab4e777005b538a9d6c4ba729fb726850b887278a08964` |
 
 ## Earlier source-access checkpoint
