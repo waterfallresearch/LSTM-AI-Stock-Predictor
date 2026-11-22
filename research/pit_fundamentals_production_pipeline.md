@@ -37,6 +37,8 @@ The WRDS form accepts up to 4,096 characters in its company-code field. The 674 
 | 11939663 | 28,280 usable source rows across 337 GVKEYs, February 2014 |
 | 11939665 | 294,178 usable source rows across 300 GVKEYs, February–December 2014. There are 132 quarantined point-date keys with competing update records. |
 | 11939666 | Submitted the complementary 337-code batch for March–December 2014. Pending verification. |
+| 11939668 | 368,960 usable source rows across 337 GVKEYs, January–December 2015. |
+| 11939670 | 330,862 usable source rows across 310 GVKEYs, January–December 2015. There are 29 quarantined point-date keys. |
 | 11939656 | CRSP Apple reference export, with an unadjusted traded price and shares on January 28, 2016. Parsing preserved CRSP's thousand-share units for the downstream conversion. |
 
 Files are local under `TrainingData/indicators_data/wrds/fundamentals_gate`. The parser supports WRDS gzip CSV output, preserves missing amount markers, and keeps a separate conflict ledger during preflight. CRSP daily exports can supply quotes directly while a separate names export is still required to establish the expected class roster. This is collection and parser evidence. The production coverage gate remains unrun. Twenty-one focused tests passed.
