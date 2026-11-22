@@ -19,6 +19,8 @@ An independent implementation reproduced each feature availability flag for ever
 
 The frozen filing sample contains 120 accepted and 40 quarantined cases. The automated run cleared 119 accepted and corroborated 29 quarantined cases. Supplemental public filing checks explain the remaining flags, and Claude reviewed them as documented explanations. The original audit receipts retain their flags. The discrepancies include a conflicting fiscal-year label, two nonfinancial amendments, five annual amendments outside the frozen Q4 rule, three missing verified nine-month contexts, and one issuer using a different parent-income tag. These counts describe the stratified sample.
 
+Replaying the audit finalizer from the exact frozen source blob in commit `2ddb315` returned `blocked` with 12 unresolved audit rows. That is the filing-clearance status. The coverage threshold failure independently closes this specification. The audited SEC evidence replay is in commit `d1a1937`. It requires a reviewed file manifest and rederives the supplemental amendment form from the original hashed SEC index bytes.
+
 | Verified artifact | SHA-256 |
 |---|---|
 | Reviewed preflight | `56d12b861263a63c4d791ad9ee3435567fe34aa895d871358dce02ac7045f6ef` |
@@ -27,6 +29,8 @@ The frozen filing sample contains 120 accepted and 40 quarantined cases. The aut
 | Independent coverage recount | `03ce34b17ab1d4d217c25c478fa935cceda0c0cf8cd264b7cdde196f79194d79` |
 | Frozen filing sample | `10776346ca2ab70aaa627f00b1f1667ba6cc4e34144494ea03b43bb771fee977` |
 | Supplemental evidence manifest | `aa3e872942818c7e013109a75955c2b711a9588742fae1e66d6e0f31edc7846b` |
+| Supplemental case adjudications | `310158afe70929bb72adfe412b3d14fed2eb5739a8923dd6cf610ce84d7b3c65` |
+| Combined machine receipts | `468272b1c0bcda893305b9cdc10f56ce9e4acb4736c360ad1f2d2f53646fc91c` |
 | Independent CRSP cap audit | `5ce63c622394921e4aab4e777005b538a9d6c4ba729fb726850b887278a08964` |
 
 ## Earlier source-access checkpoint
