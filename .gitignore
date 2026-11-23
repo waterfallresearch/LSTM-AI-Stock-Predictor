@@ -24,3 +24,7 @@ wf_pit/
 wf_run.log
 research/*_smoke.*
 .pytest_cache/
+wf_pit_unsealed_2025_2026/
+
+# Browser-automation downloads (may contain licensed WRDS/vendor exports; never commit)
+.playwright-mcp/
